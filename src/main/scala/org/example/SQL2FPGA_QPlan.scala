@@ -4437,6 +4437,7 @@ class SQL2FPGA_QPlan {
           }
           else if (this_node._nodeType == "Aggregate" || this_node._nodeType == "Project") {
             for (aggr_expr <- this_node._aggregate_expression) {
+              print("aggregate_expression of current node" + this_node._aggregate_expression)
               for (col <- aggr_expr.references) {
                 if (getColumnType(col.toString, dfmap) == "StringType") {
                   operationContainStringType = true
@@ -4445,6 +4446,7 @@ class SQL2FPGA_QPlan {
             }
 
             for (groupBy_expr <- this_node._groupBy_expression) {
+              print("group by expression of current node" + this_node._groupBy_expression)
               if (groupBy_expr.dataType.toString == "StringType") {
                 operationContainStringType = true
               }
@@ -4460,6 +4462,8 @@ class SQL2FPGA_QPlan {
             println("************************* INVALID NODETYPE ****************************")
           }
 
+
+          // HAIKAI: if operation needs string, we can not substitute the rowID. so what should we do?
           if (inputColsContainStringType == true && operationContainStringType == false) {
             this_node._stringRowIDSubstitution = true
           }
@@ -4711,6 +4715,7 @@ class SQL2FPGA_QPlan {
     }
   }
 
+  // the first join child node
   def getJoinChild(datum: SQL2FPGA_QPlan): SQL2FPGA_QPlan ={
     var result_child = new SQL2FPGA_QPlan
     for (ch <- datum._children) {
@@ -4731,15 +4736,20 @@ class SQL2FPGA_QPlan {
     return result_bool
   }
 
+  // InsertTopBeforeBottom(joinNodeList, nthFilterNodeIdx, deepestPushDownDepth) // working version
   def InsertTopBeforeBottom(joinNodeList: ListBuffer[SQL2FPGA_QPlan], topIdx: Int, bottomIdx: Int): Unit ={
 
     // top_node.join_child._parent = top_node._parent
+
+    // find the filter node's children
     var top_node_join_child = getJoinChild(joinNodeList(topIdx))
+
+    // assign the parent of the pushed down filter node's children as the parent of current filter node
     top_node_join_child._parent = joinNodeList(topIdx)._parent.clone()
 
     // top_node._parent.join_child = top_node.join_child
-    var tmp_idx = joinNodeList(topIdx)._parent(0)._children.indexOf(getJoinChild(joinNodeList(topIdx)._parent(0)))
-    joinNodeList(topIdx)._parent(0)._children(tmp_idx) = top_node_join_child
+    var children_join_node_idx = joinNodeList(topIdx)._parent(0)._children.indexOf(getJoinChild(joinNodeList(topIdx)._parent(0)))
+    joinNodeList(topIdx)._parent(0)._children(children_join_node_idx) = top_node_join_child
 
     // top_node._parent = bottom_node
     var newParentList = new ListBuffer[SQL2FPGA_QPlan]
@@ -4751,7 +4761,7 @@ class SQL2FPGA_QPlan {
     var top_node_join_child_idx = joinNodeList(topIdx)._children.indexOf(top_node_join_child)
     joinNodeList(topIdx)._children(top_node_join_child_idx) = bottom_node_join_child
 
-    // top_node.join_child._parent = top_node
+    // bottom_node.join_child._parent = top_node
     bottom_node_join_child._parent(0) = joinNodeList(topIdx)
 
     // bottom_node.join_child = top_node
@@ -4760,10 +4770,13 @@ class SQL2FPGA_QPlan {
 
     // update output col
     var orig_output = joinNodeList(topIdx)._outputCols.clone()
+    // node top node's join child is at the orignal position of top node, so it has original output columns
     top_node_join_child._outputCols = orig_output
 
     for (o_col <- joinNodeList(topIdx)._children(top_node_join_child_idx)._outputCols) {
       //joinNodeList(topIdx)._children is now referring to the children of the prev bottom join node
+
+      // top_node.join_child to add to top_node's outputcols
       if (!joinNodeList(topIdx)._outputCols.contains(o_col) && isFromInputColumnSources(joinNodeList(topIdx), o_col)) {
         joinNodeList(topIdx)._outputCols += o_col
       }
@@ -4792,6 +4805,8 @@ class SQL2FPGA_QPlan {
     joinNodeList(topIdx)._treeDepth = joinNodeList(topIdx)._parent(0)._treeDepth
     var prevNode = joinNodeList(topIdx)
     var nextNode = joinNodeList(topIdx)._parent(0)
+    // since the top filter node has been pushed down, it and its child's depth is smaller than what it should be
+    // so we need up recursively update the depth bottom up, starting from filter node
     while(prevNode._treeDepth <= nextNode._treeDepth) {
       nextNode._treeDepth = prevNode._treeDepth - 1
       for (ch <- nextNode._children) {
@@ -4842,7 +4857,8 @@ class SQL2FPGA_QPlan {
         return
       }
       println("#" + filterJoinNodeIdx + " filter node idx: " + nthFilterNodeIdx)
-      println(joinNodeList(nthFilterNodeIdx)._joining_expression.toString())
+      print("\n")
+      println("join filter node expression" + joinNodeList(nthFilterNodeIdx)._joining_expression.toString())
 
       for ( ref <- joinNodeList(nthFilterNodeIdx)._joining_expression.head.references) {
         var fromFilterNode = false
@@ -4916,7 +4932,7 @@ class SQL2FPGA_QPlan {
         }
       }
       // print out information
-      print("    " + joinNodeIdx + ": ")
+      print("current JoinNodeIdx is    " + joinNodeIdx + ": ")
       for (ref_col <- join_node._joining_expression(0).references) {
         allKeyCol += ref_col.toString
       }
@@ -4924,8 +4940,10 @@ class SQL2FPGA_QPlan {
       var costScaling = join_key_list.length // more join pairs higher cost
       var costSum = 0
       for (key_pair <- join_key_list) {
-        print("- " + key_pair + " - ")
+        print("key_pair" + " - " + key_pair + " - ")
         var key_pair_formatted = key_pair.split(" ").to(ListBuffer)
+        print("key_pair_formated: " + " - " + key_pair_formatted + " - ")
+
         key_pair_formatted.remove(1, 1) // "=" or "!=" in key pair term
         for (key <- key_pair_formatted) {
           print("(key: " + key + " table: " + columnDictionary(key) + " #row: " + getTableRow(columnDictionary(key)._1, sf) + ") ")
@@ -4937,6 +4955,7 @@ class SQL2FPGA_QPlan {
       print("\n")
     }
     // print all join node costs
+    print("print all join nodes\n")
     for (cost <- joinNodeCost) {
       println("    " + cost._2 + ": " + cost._1)
     }
@@ -4949,6 +4968,7 @@ class SQL2FPGA_QPlan {
     println(joinNodeList.last._outputCols)
     print("\n")
 
+    // here find the join node with the smallest cost
     var joinNodeOrderIdx = new ListBuffer[Int]
     for (cost <- joinNodeCost) {
       print("    " + cost._2 + ": " + cost._1)
@@ -4977,8 +4997,9 @@ class SQL2FPGA_QPlan {
     var parentOfLastJoinNode = joinNodeList.last._parent.clone()
     var outputOfLastJoinNode = joinNodeList.last._outputCols.clone()
 
-    // bottom join node
+    // bottom join node, with smallest join cost
     var bottomJoinNode = joinNodeList(joinNodeOrderIdx(0))
+
     var bottom_join_key_list = bottomJoinNode.getJoinKeyTerms(bottomJoinNode._joining_expression(0), false)
     var bottom_join_children = new ListBuffer[SQL2FPGA_QPlan]
     for (key_pair <- bottom_join_key_list) {
@@ -5013,6 +5034,7 @@ class SQL2FPGA_QPlan {
     bottomJoinNode._outputCols.clear()
     for (ch <- bottomJoinNode._children) {
       for (o_col <- ch._outputCols) {
+        // if join node does not contain children's output column, then add it to the join node output columns
         if (allKeyCol.contains(o_col) && !bottomJoinNode._outputCols.contains(o_col)) {
           bottomJoinNode._outputCols += o_col
         }
@@ -5024,6 +5046,7 @@ class SQL2FPGA_QPlan {
     }
     // middle join nodes
     for (joinNodeIdx <- 1 to joinNodeCost.size-1) {
+      // switching position
       var prev_joinNode = joinNodeList(joinNodeOrderIdx(joinNodeIdx-1))
       var middleJoinNode = joinNodeList(joinNodeOrderIdx(joinNodeIdx))
       var middle_join_key_list = middleJoinNode.getJoinKeyTerms(middleJoinNode._joining_expression(0), false)
@@ -5183,6 +5206,7 @@ class SQL2FPGA_QPlan {
           }
           if (onlyContainsIsNotNull) {
             if (this_node._children.length == 1) { // Normal cases
+              // remove this_node, link its parent and children node
               this_node._parent(0)._children(idx_this_node) = this_node._children(0)
               this_node._children(0)._parent(0) = this_node._parent(0)
             }
@@ -5863,2261 +5887,33 @@ class SQL2FPGA_QPlan {
         }
     }
 
-    //-----------------------------------Node Operation Name------------------------------------------
     var nodeOpName = _nodeType + "_TD_" + _treeDepth + scala.util.Random.nextInt(1000)
     _fpgaNodeName = nodeOpName
     _fpgaCode += nodeOpName
     //-----------------------------------Execution Mode: CPU or FPGA----------------------------------
     _fpgaCode += "cpuORfpgaMode: " + _cpuORfpga.toString
-    //-----------------------------------INPUT TABLE & COLUMN-----------------------------------------
-    if (_children.isEmpty) {
-      // This assumes the node is "SerializeFromObject"
-      // read _inputCols.length number of columns
-      // from a single table which can be looked up using "columnDictionary"
-      var inputTblCode = new ListBuffer[String]()
 
-      //TODO: fix input table gen after prun away invalid stringRowIDSubstitution table
-      //tag:table_gen
-      if (_stringRowIDSubstitution == true) {
-        //Substitute table - table with row_id
-        var tbl_name = "tbl_" + nodeOpName + "_input" + "_stringRowIDSubstitute"
-        _fpgaInputTableName = tbl_name
-        var tbl = columnDictionary(_inputCols.head)._1
-        var num_cols = _inputCols.length
-        inputTblCode += "Table " + tbl_name + ";"
-        inputTblCode += tbl_name + " = Table(\"" + tbl + "\", " + tbl + "_n, " + num_cols + ", in_dir);"
-        for (col_name <- _inputCols) {
-          var col = columnDictionary(col_name)._2
-          var col_type = getColumnDataType(dfmap(tbl), col)
-          var col_type_text = "4"
-          if (col_type == "StringType"){
-            inputTblCode += tbl_name + ".addCol(\"" + col + "\", 4, 1, 0);"
-          }
-          else {
-            inputTblCode += tbl_name + ".addCol(\"" + col + "\", 4);"
-          }
-        }
-        inputTblCode += tbl_name + ".allocateHost();"
-        inputTblCode += tbl_name + ".loadHost();"
-        //Substitute table - original table with string
-        if (_cpuORfpga == 1) {
-          if (parentNode._cpuORfpga == 1 && parentNode._fpgaOverlayType == 0) {
-            if (sf == 30) {
-              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 33);"
-              var part_tbl_name = tbl_name + "_partition"
-              var part_tbl_array_name = tbl_name + "_partition_array"
-              inputTblCode += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + tbl + "_n, " + num_cols + ", \"\");"
-              inputTblCode += part_tbl_name + ".allocateHost(1.2, hpTimes_join);"
-              inputTblCode += part_tbl_name + ".allocateDevBuffer(context_h, 32);"
-              inputTblCode += "Table " + part_tbl_array_name + "[hpTimes_join];"
-              inputTblCode += "for (int i(0); i < hpTimes_join; ++i) {"
-              inputTblCode += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
-              inputTblCode += "}"
-            } else {
-              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 32);"
-            }
-          }
-          else if (parentNode._cpuORfpga == 1 && parentNode._fpgaOverlayType == 1) {
-            if (sf == 30) {
-              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 33);"
-              var part_tbl_name = tbl_name + "_partition"
-              var part_tbl_array_name = tbl_name + "_partition_array"
-              inputTblCode += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + tbl + "_n, " + num_cols + ", \"\");"
-              inputTblCode += part_tbl_name + ".allocateHost(1.2, hpTimes_aggr);"
-              inputTblCode += part_tbl_name + ".allocateDevBuffer(context_a, 32);"
-              inputTblCode += "Table " + part_tbl_array_name + "[hpTimes_aggr];"
-              inputTblCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
-              inputTblCode += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
-              inputTblCode += "}"
-            } else {
-              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 32);"
-            }
-          }
-        }
-        //Substitute table - original table with string
-        tbl_name = "tbl_" + nodeOpName + "_input"
-        _fpgaInputTableName_stringRowIDSubstitute = tbl_name
-        tbl = columnDictionary(_inputCols.head)._1
-        num_cols = _inputCols.length
-        inputTblCode += "Table " + tbl_name + ";"
-        inputTblCode += tbl_name + " = Table(\"" + tbl + "\", " + tbl + "_n, " + num_cols + ", in_dir);"
-        for (col_name <- _inputCols){
-          var col = columnDictionary(col_name)._2
-          var col_type = getColumnDataType(dfmap(tbl), col)
-          var col_type_text = "4"
-          if (col_type == "StringType"){
-            var tbl_col = (tbl, col)
-            col_type_text = getStringLengthMacro(tbl_col) + "+1"
-          }
-          inputTblCode += tbl_name + ".addCol(\"" + col + "\", " + col_type_text + ");"
-        }
-        inputTblCode += tbl_name + ".allocateHost();"
-        inputTblCode += tbl_name + ".loadHost();"
-      }
-      else {
-        var tbl_name = "tbl_" + nodeOpName + "_input"
-        _fpgaInputTableName = tbl_name
-        var tbl = columnDictionary(_inputCols.head)._1
-        var num_cols = _inputCols.length
-        inputTblCode += "Table " + tbl_name + ";"
-        inputTblCode += tbl_name + " = Table(\"" + tbl + "\", " + tbl + "_n, " + num_cols + ", in_dir);"
-        for (col_name <- _inputCols){
-          var col = columnDictionary(col_name)._2
-          var col_type = getColumnDataType(dfmap(tbl), col)
-          var col_type_text = "4"
-          if (col_type == "StringType") {
-            var tbl_col = (tbl, col)
-            col_type_text = getStringLengthMacro(tbl_col) + "+1"
-          }
-          inputTblCode += tbl_name + ".addCol(\"" + col + "\", " + col_type_text + ");"
-        }
-        inputTblCode += tbl_name + ".allocateHost();"
-        inputTblCode += tbl_name + ".loadHost();"
+    genCodeInputTableAndColumn(parentNode, dfmap, sf, nodeOpName)
+    genCodeOutputTableAndColumn(parentNode, dfmap, sf)
 
-        if (_cpuORfpga == 1) {
-          if (parentNode._cpuORfpga == 1 && parentNode._fpgaOverlayType == 0) {
-            if (sf == 30) {
-              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 33);"
-              var part_tbl_name = tbl_name + "_partition"
-              var part_tbl_array_name = tbl_name + "_partition_array"
-              inputTblCode += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + tbl + "_n, " + num_cols + ", \"\");"
-              inputTblCode += part_tbl_name + ".allocateHost(1.2, hpTimes_join);"
-              inputTblCode += part_tbl_name + ".allocateDevBuffer(context_h, 32);"
-              inputTblCode += "Table " + part_tbl_array_name + "[hpTimes_join];"
-              inputTblCode += "for (int i(0); i < hpTimes_join; ++i) {"
-              inputTblCode += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
-              inputTblCode += "}"
-            } else {
-              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 32);"
-            }
-          }
-          else if (parentNode._cpuORfpga == 1 && parentNode._fpgaOverlayType == 1) {
-            if (sf == 30) {
-              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 33);"
-              var part_tbl_name = tbl_name + "_partition"
-              var part_tbl_array_name = tbl_name + "_partition_array"
-              inputTblCode += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + tbl + "_n, " + num_cols + ", \"\");"
-              inputTblCode += part_tbl_name + ".allocateHost(1.2, hpTimes_aggr);"
-              inputTblCode += part_tbl_name + ".allocateDevBuffer(context_a, 32);"
-              inputTblCode += "Table " + part_tbl_array_name + "[hpTimes_aggr];"
-              inputTblCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
-              inputTblCode += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
-              inputTblCode += "}"
-            } else {
-              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 32);"
-            }
-          }
-        }
-      }
-      _fpgaInputCode = inputTblCode
-      _fpgaCode += inputTblCode.toString()
-    }
-    else {
-      for (ch <- _children) {
-        // Get output tables from the children node(s) and use as input tables
-        _fpgaInputCode ++= ch.fpgaOutputCode
-        _fpgaInputDevAllocateCode ++= ch.fpgaOutputDevAllocateCode
-        _fpgaCode ++= ch.fpgaOutputCode
-      }
-    }
-    //-----------------------------------OUTPUT TABLE & COLUMN----------------------------------------
-    if (_outputCols.nonEmpty) {
-      if (_operation.isEmpty) {
-        // This assumes the node is "SerializeFromObject", so outputCol equals inputCol
-        _fpgaOutputTableName = _fpgaInputTableName
-        _fpgaOutputTableName_stringRowIDSubstitute = _fpgaInputTableName_stringRowIDSubstitute
-        _fpgaOutputCode = _fpgaInputCode
-        _fpgaOutputDevAllocateCode = _fpgaInputDevAllocateCode
-      }
-      else {
-        for (col <- _outputCols){
-          if (columnDictionary.contains(col) == false){
-            // TODO: Add updated expression
-            columnDictionary += (col -> (_fpgaNodeName, null))
-          }
-        }
-        var outputTblCol = new ListBuffer[String]()
-        var max_num_rows = 6100000 * sf
-        var tbl_name_fpga_table = "tbl_" + _fpgaNodeName + "_output" + "_preprocess"
-        var tbl_name = "tbl_" + _fpgaNodeName + "_output"
-
-        if (_cpuORfpga == 1) {
-          max_num_rows = _numTableRow
-        }
-
-        var intermediate_num_cols = 0
-        var part_tbl_name = ""
-        var part_tbl_array_name = ""
-        if (_cpuORfpga == 1 && _fpgaOverlayType == 0) { // gqe-join
-          if (parentNode != null && parentNode.cpuORfpga == 1 && parentNode._fpgaOverlayType == 1) {
-            _fpgaOutputTableName = tbl_name_fpga_table
-            intermediate_num_cols = _outputCols.length
-            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-            outputTblCol += _fpgaOutputTableName + ".allocateHost();"
-            _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 32);"
-            // duplicate table for aggr overlay
-            outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-            outputTblCol += tbl_name + ".allocateHost();"
-            parentNode._fpgaOutputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 32);"
-          }
-          else {
-            _fpgaOutputTableName = tbl_name
-            intermediate_num_cols = _outputCols.length
-            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-            if (sf == 30) {
-              outputTblCol += _fpgaOutputTableName + ".allocateHost(1.2, hpTimes_join);"
-              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 32);"
-              part_tbl_array_name = tbl_name + "_partition_array"
-              _fpgaOutputDevAllocateCode += "Table " + part_tbl_array_name + "[hpTimes_join];"
-              _fpgaOutputDevAllocateCode += "for (int i(0); i < hpTimes_join; ++i) {"
-              _fpgaOutputDevAllocateCode += "    " + part_tbl_array_name + "[i] = " + _fpgaOutputTableName + ".createSubTable(i);"
-              _fpgaOutputDevAllocateCode += "}"
-            } else {
-              outputTblCol += _fpgaOutputTableName + ".allocateHost();"
-              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 32);"
-            }
-          }
-        }
-        else if (_cpuORfpga == 1 && _fpgaOverlayType == 1) { // gqe-aggr
-          if (parentNode != null && parentNode.cpuORfpga == 1 && parentNode._fpgaOverlayType == 0) {
-            _fpgaOutputTableName = tbl_name_fpga_table
-            intermediate_num_cols = 16 // gqe-outputs a 16-col tbl
-            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-            outputTblCol += _fpgaOutputTableName + ".allocateHost();"
-            _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
-            // add another output table, to shrink and shuffle 16-col table to an 8-col table, when using the gqe-aggr overlay
-            outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + _outputCols.length + ", \"\");"
-            outputTblCol += tbl_name + ".allocateHost();"
-            _fpgaOutputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 32);"
-          }
-          else if (parentNode != null && parentNode.cpuORfpga == 1 && parentNode._fpgaOverlayType == 1) {
-            _fpgaOutputTableName = tbl_name_fpga_table
-            intermediate_num_cols = 16 // gqe-outputs a 16-col tbl
-            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-            outputTblCol += _fpgaOutputTableName + ".allocateHost();"
-            _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
-            // add another output table, to shrink and shuffle 16-col table to an 8-col table, when using the gqe-aggr overlay
-            outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + _outputCols.length + ", \"\");"
-            outputTblCol += tbl_name + ".allocateHost();"
-            _fpgaOutputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 32);"
-          }
-          else {
-            _fpgaOutputTableName = tbl_name_fpga_table
-            intermediate_num_cols = 16 // gqe-outputs a 16-col tbl
-            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-            if (sf == 30) {
-              outputTblCol += _fpgaOutputTableName + ".allocateHost(1.2, hpTimes_aggr);"
-              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
-              part_tbl_array_name = tbl_name + "_partition_array"
-              _fpgaOutputDevAllocateCode += "Table " + part_tbl_array_name + "[hpTimes_aggr];"
-              _fpgaOutputDevAllocateCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
-              _fpgaOutputDevAllocateCode += "    " + part_tbl_array_name + "[i] = " + _fpgaOutputTableName + ".createSubTable(i);"
-              _fpgaOutputDevAllocateCode += "}"
-              // add another output table, to shrink and shuffle 16-col table to an 8-col table, when using the gqe-aggr overlay
-              outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + _outputCols.length + ", \"\");"
-            } else {
-              outputTblCol += _fpgaOutputTableName + ".allocateHost();"
-              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
-              // add another output table, to shrink and shuffle 16-col table to an 8-col table, when using the gqe-aggr overlay
-              outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + _outputCols.length + ", \"\");"
-              outputTblCol += tbl_name + ".allocateHost();"
-            }
-          }
-        }
-        else if (parentNode != null && parentNode.cpuORfpga == 1) {
-          _fpgaOutputTableName = tbl_name
-          intermediate_num_cols = _outputCols.length
-          outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-          outputTblCol += _fpgaOutputTableName + ".allocateHost();"
-          if (parentNode._fpgaOverlayType == 0) {
-            if (sf == 30) {
-              part_tbl_name = tbl_name + "_partition"
-              part_tbl_array_name = tbl_name + "_partition_array"
-              outputTblCol += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-              outputTblCol += part_tbl_name + ".allocateHost(1.2, hpTimes_join);"
-              outputTblCol += part_tbl_name + ".allocateDevBuffer(context_h, 32);"
-              outputTblCol += "Table " + part_tbl_array_name + "[hpTimes_join];"
-              outputTblCol += "for (int i(0); i < hpTimes_join; ++i) {"
-              outputTblCol += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
-              outputTblCol += "}"
-              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 33);"
-            } else {
-              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 32);"
-            }
-          }
-          else if (parentNode._fpgaOverlayType == 1) {
-            if (sf == 30) {
-              part_tbl_name = tbl_name + "_partition"
-              part_tbl_array_name = tbl_name + "_partition_array"
-              outputTblCol += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-              outputTblCol += part_tbl_name + ".allocateHost(1.2, hpTimes_aggr);"
-              outputTblCol += part_tbl_name + ".allocateDevBuffer(context_a, 32);"
-              outputTblCol += "Table " + part_tbl_array_name + "[hpTimes_aggr];"
-              outputTblCol += "for (int i(0); i < hpTimes_aggr; ++i) {"
-              outputTblCol += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
-              outputTblCol += "}"
-              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
-            } else {
-              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 32);"
-            }
-          }
-        }
-        else {
-          _fpgaOutputTableName = tbl_name
-          intermediate_num_cols = _outputCols.length
-          outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
-          outputTblCol += _fpgaOutputTableName + ".allocateHost();"
-        }
-
-        _fpgaOutputCode ++= outputTblCol
-        _fpgaCode ++= outputTblCol
-      }
-    }
     //-----------------------------------PRE-PROCESSING-----------------------------------------------
     if (_nodeType == "Aggregate" || _nodeType == "Project") {
       for (groupBy_payload <- _aggregate_expression) {
+        print("gencode: groupBy")
         var col_symbol = groupBy_payload.toString.split(" AS ").last
         var col_type = groupBy_payload.dataType.toString
         columnDictionary += (col_symbol -> (col_type, "NULL"))
       }
     }
+    print("gencode: columDictionary" + columnDictionary)
     //-----------------------------------OPERATIONS---------------------------------------------------
     if (_operation.nonEmpty) {
       if (_cpuORfpga == 1) { // Execute on FPGA - generate L2 module configurations
-        var joinTblOrderSwapped = false
-        if (_fpgaOverlayType == 0) { // gqe_join-0, gqe_aggr-1, gqe_part-2
-          // tag:overlay0
-          var nodeCfgCmd = "cfg_" + nodeOpName + "_cmds"
-          var nodeGetCfgFuncName = "get_cfg_dat_" + nodeOpName + "_gqe_join"
-          _fpgaConfigCode += "cfgCmd " + nodeCfgCmd + ";"
-          _fpgaConfigCode += nodeCfgCmd + ".allocateHost();"
-          _fpgaConfigCode += nodeGetCfgFuncName + " (" + nodeCfgCmd + ".cmd);"
-          _fpgaConfigCode += nodeCfgCmd + ".allocateDevBuffer(context_h, 32);"
-
-          // Generate the function that generates the Xilinx L2 module configurations
-          var joinConcatenateFuncCode = new ListBuffer[String]()
-          var cfgFuncCode = new ListBuffer[String]()
-          cfgFuncCode += "void " + nodeGetCfgFuncName + "(ap_uint<512>* hbuf) {"
-          var cfgFuncCode_gqePart = new ListBuffer[String]()
-          if (sf == 30) {
-            cfgFuncCode_gqePart += "void " + nodeGetCfgFuncName + "_part" + "(ap_uint<512>* hbuf) {"
-          }
-          //    find joining terms (if there is any)
-          var join_operator = getJoinOperator(this)
-          var leftmost_operator = getLeftMostBindedOperator(this)
-          var rightmost_operator = getRightMostBindedOperator(this)
-          var join_left_table_col = leftmost_operator._children.head.outputCols
-          var join_right_table_col = rightmost_operator._children.last.outputCols
-          var join_left_table_name = leftmost_operator._children.head._fpgaOutputTableName
-          var join_right_table_name = rightmost_operator._children.last._fpgaOutputTableName
-
-          if (leftmost_operator == rightmost_operator && join_left_table_col == join_right_table_col) {
-            //non-join operators - no right table
-            join_right_table_col = new ListBuffer[String]()
-            rightmost_operator = null
-          }
-          else {
-            //join operators
-            var largerLeftTbl = false
-            if (leftmost_operator._children.head._nodeType == "SerializeFromObject" && rightmost_operator._children.last._nodeType == "SerializeFromObject") {
-              if (leftmost_operator._children.head._numTableRow > rightmost_operator._children.last._numTableRow) {
-                largerLeftTbl = true
-              }
-            }
-            //              // table order swapping based on number of rows to reduce hashmap creation size
-            //              if (join_operator._nodeType == "JOIN_INNER") {
-            //                if ((leftmost_operator._children.head._nodeType == "SerializeFromObject" && leftmost_operator._children.head._numTableRow >= 150000 && rightmost_operator._children.last._nodeType != "SerializeFromObject") ||
-            //                  (leftmost_operator._children.head._nodeType.contains("JOIN") && rightmost_operator._children.last._nodeType == "Filter") ||
-            //                  (rightmost_operator._children.last._nodeType == "SerializeFromObject" && rightmost_operator._children.last._numTableRow < 150000) ||
-            //                  largerLeftTbl) {
-            //                  var temp_operator = rightmost_operator
-            //                  rightmost_operator = leftmost_operator
-            //                  leftmost_operator = temp_operator
-            //                  join_left_table_col = leftmost_operator._children.last.outputCols
-            //                  join_right_table_col = rightmost_operator._children.head.outputCols
-            //                  join_left_table_name = leftmost_operator._children.last._fpgaOutputTableName
-            //                  join_right_table_name = rightmost_operator._children.head._fpgaOutputTableName
-            //                }
-            //              }
-
-            // Alec hack - tag:inner_join_order
-            // if ( // 632
-            if ((queryNum == 1 && (join_operator._treeDepth == 4 || join_operator._treeDepth == 3 || join_operator._treeDepth == 2) && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 2 && (join_operator._treeDepth == 5 || join_operator._treeDepth == 4) && join_operator._nodeType == "JOIN_INNER") ||
-              // (queryNum == 2 && join_operator._treeDepth == 7 && join_operator._nodeType == "JOIN_INNER") || // 297
-              // if ((queryNum == 2 && join_operator._treeDepth == 8 && join_operator._nodeType == "JOIN_INNER") || // 415
-              // if ((queryNum == 2 && join_operator._treeDepth == 9 && join_operator._nodeType == "JOIN_INNER") || // 558
-              // if ((queryNum == 2 && join_operator._treeDepth == 7 && join_operator._treeDepth == 8 && join_operator._treeDepth == 9 && join_operator._nodeType == "JOIN_INNER") || //632
-              (queryNum == 3 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") || // 255, without is better => 103 ms
-              (queryNum == 5 && (join_operator._treeDepth == 2 || join_operator._treeDepth == 3 || join_operator._treeDepth == 4) && join_operator._nodeType == "JOIN_INNER") || //TPCH
-              // (queryNum == 5 && (join_operator._treeDepth == 8) && join_operator._nodeType == "JOIN_INNER") || // TPCDS
-              (queryNum == 4 && (join_operator._treeDepth == 5 || join_operator._treeDepth == 3) && join_operator._nodeType == "JOIN_INNER") || // TPCDS
-              (queryNum == 6 && (join_operator._treeDepth == 5) && join_operator._nodeType == "JOIN_INNER") || // TPCDS
-              (queryNum == 7 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 4 || join_operator._treeDepth == 6) && join_operator._nodeType == "JOIN_INNER") ||
-              // (queryNum == 7 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 4 || join_operator._treeDepth == 5 || join_operator._treeDepth == 6) && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 8 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 4 || join_operator._treeDepth == 5 || join_operator._treeDepth == 8) && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 9 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 6) && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 10 && (join_operator._treeDepth == 2 || join_operator._treeDepth == 3 || join_operator._treeDepth == 4) && join_operator._nodeType == "JOIN_INNER") ||
-              //                 (queryNum == 11 && join_operator._treeDepth == 4 && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 11 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 4) && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 12 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 14 && join_operator._treeDepth == 1 && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 16 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 17 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 21 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") ||
-              (queryNum == 23 && join_operator._treeDepth == 0 && join_operator._nodeType == "JOIN_INNER"))
-            {
-              joinTblOrderSwapped = true
-              var temp_operator = rightmost_operator
-              rightmost_operator = leftmost_operator
-              leftmost_operator = temp_operator
-              join_left_table_col = leftmost_operator._children.last.outputCols
-              join_right_table_col = rightmost_operator._children.head.outputCols
-              join_left_table_name = leftmost_operator._children.last._fpgaOutputTableName
-              join_right_table_name = rightmost_operator._children.head._fpgaOutputTableName
-            }
-
-            //////// Alec-added: code section below is correct //////////////////////////////
-            if (join_operator._nodeType == "JOIN_LEFTSEMI" || (join_operator._nodeType == "JOIN_LEFTANTI" && join_operator._operation.head.contains("OR isnull")) || (join_operator._nodeType == "JOIN_LEFTANTI")) {
-              joinTblOrderSwapped = true
-              var temp_operator = rightmost_operator
-              rightmost_operator = leftmost_operator
-              leftmost_operator = temp_operator
-              join_left_table_col = leftmost_operator._children.last.outputCols
-              join_right_table_col = rightmost_operator._children.head.outputCols
-              join_left_table_name = leftmost_operator._children.last._fpgaOutputTableName
-              join_right_table_name = rightmost_operator._children.head._fpgaOutputTableName
-            }
-            /////////////////////////////////////////////////////////////////////////////////
-          }
-
-          var nodeCfgCmd_part = "cfg_" + nodeOpName + "_cmds_part"
-          if (sf == 30) {
-            if ((leftmost_operator._children.last._cpuORfpga == 0 || leftmost_operator._children.last._nodeType == "SerializeFromObject") ||
-              (rightmost_operator._children.head._cpuORfpga == 0 || rightmost_operator._children.head._nodeType == "SerializeFromObject")){
-              _fpgaConfigCode += "cfgCmd " + nodeCfgCmd_part + ";"
-              _fpgaConfigCode += nodeCfgCmd_part + ".allocateHost();"
-              _fpgaConfigCode += nodeGetCfgFuncName + "_part" + " (" + nodeCfgCmd_part + ".cmd);"
-              _fpgaConfigCode += nodeCfgCmd_part + ".allocateDevBuffer(context_h, 32);"
-            }
-          }
-
-          // ----------------------------------- Debug info -----------------------------------
-          cfgFuncCode += "    // StringRowIDSubstitution: " + _stringRowIDSubstitution + " StringRowIDBackSubstitution: " + _stringRowIDBackSubstitution
-          cfgFuncCode += "    // Supported operation: " + _nodeType
-          cfgFuncCode += "    // Operation: " + _operation
-          for (binded_overlay <- _bindedOverlayInstances) {
-            cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
-          }
-          for (binded_overlay <- _bindedOverlayInstances_left) {
-            cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
-          }
-          for (binded_overlay <- _bindedOverlayInstances_right) {
-            cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
-          }
-          cfgFuncCode += "    // Left Table: " + join_left_table_col
-          cfgFuncCode += "    // Right Table: " + join_right_table_col
-          cfgFuncCode += "    // Output Table: " + _outputCols
-          cfgFuncCode += "    // Node Depth: " + _treeDepth
-          cfgFuncCode += "    ap_uint<512>* b = hbuf;"
-          cfgFuncCode += "    memset(b, 0, sizeof(ap_uint<512>) * 9);"
-          cfgFuncCode += "    ap_uint<512> t = 0;"
-          if (sf == 30) {
-            cfgFuncCode_gqePart += "    ap_uint<512>* b = hbuf;"
-            cfgFuncCode_gqePart += "    memset(b, 0, sizeof(ap_uint<512>) * 9);"
-            cfgFuncCode_gqePart += "    ap_uint<512> t = 0;"
-            cfgFuncCode_gqePart += ""
-          }
-
-          // DRAM -> filter - input readin
-          //    A record to track how inputs cols navigates through the overlay
-          // table a
-          var a_col_idx_dict_prev = collection.mutable.Map[String, Int]()
-          var a_idx_col_dict_prev = collection.mutable.Map[Int, String]()
-          var a_tmp_idx = 0
-          for (i_col <- join_left_table_col) {
-            a_col_idx_dict_prev += (i_col -> a_tmp_idx)
-            a_idx_col_dict_prev += (a_tmp_idx -> i_col)
-            a_tmp_idx += 1
-          }
-          // table b
-          var b_col_idx_dict_prev = collection.mutable.Map[String, Int]()
-          var b_idx_col_dict_prev = collection.mutable.Map[Int, String]()
-          var b_tmp_idx = 0
-          for (i_col <- join_right_table_col) {
-            b_col_idx_dict_prev += (i_col -> b_tmp_idx)
-            b_idx_col_dict_prev += (b_tmp_idx -> i_col)
-            b_tmp_idx += 1
-          }
-
-          // filter -> join
-          cfgFuncCode += ""
-          cfgFuncCode += "    //--------------filter--------------"
-          //--------find left table filtering (if there is any)
-          var a_col_idx_dict_next = a_col_idx_dict_prev.clone()
-          var a_idx_col_dict_next = a_idx_col_dict_prev.clone()
-          var filter_a_config_call = "gen_pass_fcfg";
-          a_tmp_idx = 0
-          if (leftmost_operator != null && leftmost_operator._filtering_expression != null) {
-            // move filter operation reference cols to front of the table
-            for (ref_col <- leftmost_operator._filtering_expression.references) {
-              var prev_ref_idx = a_col_idx_dict_next(ref_col.toString)
-              var tmp_col = a_idx_col_dict_next(a_tmp_idx)
-              a_col_idx_dict_next(tmp_col) = prev_ref_idx
-              a_idx_col_dict_next(prev_ref_idx) = tmp_col
-              a_col_idx_dict_next(ref_col.toString) = a_tmp_idx
-              a_idx_col_dict_next(a_tmp_idx) = ref_col.toString
-              a_tmp_idx += 1
-            }
-            // filter config call
-            var filterCfgFuncName = "gen_fcfg_" + _fpgaNodeName + "_tbl_a"
-            filter_a_config_call = filterCfgFuncName
-            var filterConfigFuncCode = getFilterConfigFuncCode(filterCfgFuncName, leftmost_operator, a_col_idx_dict_next)
-            for (line <- filterConfigFuncCode) {
-              _fpgaConfigFuncCode += line
-            }
-          }
-          cfgFuncCode += "    // input table a"
-          var tbl_A_col_list = "signed char id_a[] = {"
-          var num_tbl_A_col = a_col_idx_dict_prev.size
-          for (a <- 0 to 8 - 1) {
-            if (a < num_tbl_A_col) { // input cols
-              // see Q4 for verification
-              var col_name = a_idx_col_dict_next(a)
-              var prev_col_idx = a_col_idx_dict_prev(col_name)
-              //                var col_name = a_idx_col_dict_prev(a)
-              //                var prev_col_idx = a_col_idx_dict_next(col_name)
-              tbl_A_col_list += prev_col_idx.toString + ","
-            }
-            else {
-              tbl_A_col_list += "-1,"
-            }
-          }
-          tbl_A_col_list = tbl_A_col_list.stripSuffix(",")
-          tbl_A_col_list += "};"
-          cfgFuncCode += "    " + tbl_A_col_list
-          cfgFuncCode += "    for (int c = 0; c < 8; ++c) {"
-          cfgFuncCode += "        t.range(56 + 8 * c + 7, 56 + 8 * c) = id_a[c];"
-          cfgFuncCode += "    }"
-          cfgFuncCode += "    // filter tbl_a config"
-          cfgFuncCode += "    uint32_t cfga[45];"
-          cfgFuncCode += "    " + filter_a_config_call + "(cfga);"
-          cfgFuncCode += "    memcpy(&b[3], cfga, sizeof(uint32_t) * 45);"
-
-          //--------find right table filtering (if there is any)
-          var b_col_idx_dict_next = b_col_idx_dict_prev.clone()
-          var b_idx_col_dict_next = b_idx_col_dict_prev.clone()
-          b_tmp_idx = 0
-          var filter_b_config_call = "gen_pass_fcfg";
-          if (rightmost_operator != null && rightmost_operator._filtering_expression != null) {
-            // TODO: move filter operation reference cols to front of the table
-            for (ref_col <- rightmost_operator._filtering_expression.references) {
-              var prev_ref_idx = b_col_idx_dict_next(ref_col.toString)
-              var tmp_col = b_idx_col_dict_next(b_tmp_idx)
-              b_col_idx_dict_next(tmp_col) = prev_ref_idx
-              b_idx_col_dict_next(prev_ref_idx) = tmp_col
-              b_col_idx_dict_next(ref_col.toString) = b_tmp_idx
-              b_idx_col_dict_next(b_tmp_idx) = ref_col.toString
-              b_tmp_idx += 1
-            }
-            // filter config call
-            var filterCfgFuncName = "gen_fcfg_" + _fpgaNodeName + "_tbl_b"
-            filter_b_config_call = filterCfgFuncName
-            var filterConfigFuncCode = getFilterConfigFuncCode(filterCfgFuncName, rightmost_operator, b_col_idx_dict_next)
-            for (line <- filterConfigFuncCode) {
-              _fpgaConfigFuncCode += line
-            }
-          }
-          cfgFuncCode += ""
-          cfgFuncCode += "    // input table b"
-          var tbl_B_col_list = "signed char id_b[] = {"
-          var num_tbl_B_col = b_col_idx_dict_prev.size
-          for (b <- 0 to 8 - 1) {
-            if (b < num_tbl_B_col) { // input cols
-              // see Q4 for verification
-              var col_name = b_idx_col_dict_next(b)
-              var prev_col_idx = b_col_idx_dict_prev(col_name)
-              //                var col_name = b_idx_col_dict_prev(b)
-              //                var prev_col_idx = b_col_idx_dict_next(col_name)
-              tbl_B_col_list += prev_col_idx.toString + ","
-            }
-            else {
-              tbl_B_col_list += "-1,"
-            }
-          }
-          tbl_B_col_list = tbl_B_col_list.stripSuffix(",")
-          tbl_B_col_list += "};"
-          cfgFuncCode += "    " + tbl_B_col_list
-          cfgFuncCode += "    for (int c = 0; c < 8; ++c) {"
-          cfgFuncCode += "        t.range(120 + 8 * c + 7, 120 + 8 * c) = id_b[c];"
-          cfgFuncCode += "    }"
-          cfgFuncCode += "    // filter tbl_b config"
-          cfgFuncCode += "    uint32_t cfgb[45];"
-          cfgFuncCode += "    " + filter_b_config_call + "(cfgb);"
-          cfgFuncCode += "    memcpy(&b[6], cfgb, sizeof(uint32_t) * 45);"
-          // update prev with next
-          a_col_idx_dict_prev = a_col_idx_dict_next.clone()
-          a_idx_col_dict_prev = a_idx_col_dict_next.clone()
-          b_col_idx_dict_prev = b_col_idx_dict_next.clone()
-          b_idx_col_dict_prev = b_idx_col_dict_next.clone()
-
-          // join -> eval
-          cfgFuncCode += ""
-          cfgFuncCode += "    //--------------join--------------"
-          var join_on = 0
-          var dual_key_join_on = 0
-          var join_flag = 0
-          var leftTableColShuffleIdx = new ListBuffer[Int]()
-          var rightTableColShuffleIdx = new ListBuffer[Int]()
-          var leftTableKeyColShuffleName = new ListBuffer[String]()
-          var rightTableKeyColShuffleName = new ListBuffer[String]()
-          var leftTablePayloadColShuffleName = new ListBuffer[String]()
-          var rightTablePayloadColShuffleName = new ListBuffer[String]()
-          if (join_operator != null) { // valid join op
-            join_on = 1
-            // join dual key
-            var join_key_pairs = getJoinKeyTerms(join_operator._joining_expression(0), false)
-            var num_join_key_pairs = join_key_pairs.length
-            if (num_join_key_pairs > 2) {
-              cfgFuncCode += "    Unsupported multi-key pairs more than two"
-              dual_key_join_on = -1
-            }
-            else if (num_join_key_pairs == 2 && !join_operator._isSpecialSemiJoin) {
-              dual_key_join_on = 1
-            }
-            else {
-              dual_key_join_on = 0
-            }
-            // join type
-            join_operator._nodeType match {
-              case "JOIN_INNER" =>
-                join_flag = 0
-              case "JOIN_LEFTSEMI" =>
-                if (join_operator._isSpecialSemiJoin) {
-                  join_flag = 3
-                }
-                else {
-                  join_flag = 1
-                }
-              case "JOIN_LEFTANTI" =>
-                join_flag = 2
-              case _ =>
-                join_flag = -1
-            }
-
-            // updating output_alise col with output col
-            if (leftmost_operator._outputCols_alias.nonEmpty) {
-              var this_idx = 0
-              for (o_col_alias <- leftmost_operator._outputCols) {
-                var curr_col = leftmost_operator._outputCols_alias(this_idx)
-                var curr_idx = a_col_idx_dict_prev(curr_col)
-                a_col_idx_dict_prev.remove(curr_col)
-                a_idx_col_dict_prev.remove(curr_idx)
-                a_col_idx_dict_prev += (o_col_alias -> curr_idx)
-                a_idx_col_dict_prev += (curr_idx -> o_col_alias)
-                this_idx += 1
-              }
-            }
-            if (rightmost_operator._outputCols_alias.nonEmpty) {
-              var this_idx = 0
-              for (o_col_alias <- rightmost_operator._outputCols) {
-                var curr_col = rightmost_operator._outputCols_alias(this_idx)
-                var curr_idx = b_col_idx_dict_prev(curr_col)
-                b_col_idx_dict_prev.remove(curr_col)
-                b_idx_col_dict_prev.remove(curr_idx)
-                b_col_idx_dict_prev += (o_col_alias -> curr_idx)
-                b_idx_col_dict_prev += (curr_idx -> o_col_alias)
-                this_idx += 1
-              }
-            }
-
-            // join key-payload col rearrangement
-            for (key_pair <- join_key_pairs) {
-              var leftTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" = ").head
-              var rightTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" = ").last
-              if (join_operator._isSpecialSemiJoin && key_pair.contains(" != ")) {
-                leftTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" != ").head
-                rightTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" != ").last
-              }
-              else if (join_operator._isSpecialAntiJoin && key_pair.contains(" != ")) {
-                leftTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" != ").head
-                rightTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" != ").last
-              }
-
-              var needTableColSwap = false
-              if (a_col_idx_dict_prev.contains(rightTblCol) && b_col_idx_dict_prev.contains(leftTblCol)) { //no alias
-                needTableColSwap = true
-              }
-              if (needTableColSwap) {
-                var tmpTblCol = leftTblCol
-                leftTblCol = rightTblCol
-                rightTblCol = tmpTblCol
-              }
-
-              if (join_operator._isSpecialSemiJoin == true && key_pair.contains(" != ")) {
-                leftTableColShuffleIdx += a_col_idx_dict_prev(leftTblCol)
-                rightTableColShuffleIdx += b_col_idx_dict_prev(rightTblCol)
-              } else {
-                leftTableColShuffleIdx += a_col_idx_dict_prev(leftTblCol)
-                rightTableColShuffleIdx += b_col_idx_dict_prev(rightTblCol)
-                leftTableKeyColShuffleName += leftTblCol
-                rightTableKeyColShuffleName += rightTblCol
-              }
-            }
-            for (col_idx <- a_col_idx_dict_prev) {
-              var col = col_idx._1
-              var idx = col_idx._2
-              if (leftTableKeyColShuffleName.indexOf(col) == -1) {
-                leftTablePayloadColShuffleName += col
-                if (!leftTableColShuffleIdx.contains(idx)) {
-                  leftTableColShuffleIdx += idx
-                }
-              }
-            }
-            for (col_idx <- b_col_idx_dict_prev) {
-              var col = col_idx._1
-              var idx = col_idx._2
-              if (rightTableKeyColShuffleName.indexOf(col) == -1) {
-                rightTablePayloadColShuffleName += col
-                if (!rightTableColShuffleIdx.contains(idx)) {
-                  rightTableColShuffleIdx += idx
-                }
-              }
-            }
-          }
-          else {
-            var idx = 0
-            if (this._nodeType == "Filter") {
-              //shuffle filtering output cols here
-              var temp_col_idx_dict_prev = collection.mutable.Map[String, Int]()
-              var temp_idx_col_dict_prev = collection.mutable.Map[Int, String]()
-              for (filter_o_col <- this._outputCols) {
-                if (a_col_idx_dict_prev.contains(filter_o_col)) {
-                  leftTableColShuffleIdx += a_col_idx_dict_prev(filter_o_col)
-                } else {
-                  var alias_col = this._outputCols_alias(idx)
-                  leftTableColShuffleIdx += a_col_idx_dict_prev(alias_col)
-                }
-                temp_col_idx_dict_prev += (filter_o_col -> idx)
-                temp_idx_col_dict_prev += (idx -> filter_o_col)
-                idx += 1
-              }
-              a_col_idx_dict_prev = temp_col_idx_dict_prev
-              a_idx_col_dict_prev = temp_idx_col_dict_prev
-            }
-            else if (this._nodeType == "Aggregate") {
-              //shuffle aggregation reference cols here
-              var temp_col_idx_dict_prev = collection.mutable.Map[String, Int]()
-              var temp_idx_col_dict_prev = collection.mutable.Map[Int, String]()
-              // no groupby operation here - gqe-join
-              for (this_aggr_expr <- this._aggregate_expression) {
-                for (aggregate_input_col <- this_aggr_expr.references) {
-                  var aggr_i_col_str = aggregate_input_col.toString
-                  leftTableColShuffleIdx += a_col_idx_dict_prev(aggr_i_col_str)
-                  temp_col_idx_dict_prev += (aggr_i_col_str -> idx)
-                  temp_idx_col_dict_prev += (idx -> aggr_i_col_str)
-                  idx += 1
-                }
-              }
-              a_col_idx_dict_prev = temp_col_idx_dict_prev
-              a_idx_col_dict_prev = temp_idx_col_dict_prev
-            }
-            else {
-              for ( a_col <- a_col_idx_dict_prev) {
-                leftTableColShuffleIdx += idx
-                idx += 1
-              }
-            }
-            idx = 0
-            for ( b_col <- b_col_idx_dict_prev) {
-              rightTableColShuffleIdx += idx
-              idx += 1
-            }
-          }
-
-          if (sf == 30) {
-            //gqePart configuration bits
-            var filter_a_config_call = "gen_pass_fcfg";
-            cfgFuncCode_gqePart += "    // input table a"
-            var tbl_A_col_list = "signed char id_a[] = {"
-            var num_tbl_A_col = a_col_idx_dict_prev.size
-            for (a <- 0 to 8 - 1) {
-              if (a < leftTableColShuffleIdx.length) {
-                tbl_A_col_list += leftTableColShuffleIdx(a) + ","
-              }
-              else {
-                tbl_A_col_list += "-1,"
-              }
-            }
-            tbl_A_col_list = tbl_A_col_list.stripSuffix(",")
-            tbl_A_col_list += "};"
-            cfgFuncCode_gqePart += "    " + tbl_A_col_list
-            cfgFuncCode_gqePart += "    for (int c = 0; c < 8; ++c) {"
-            cfgFuncCode_gqePart += "        t.range(56 + 8 * c + 7, 56 + 8 * c) = id_a[c];"
-            cfgFuncCode_gqePart += "    }"
-            cfgFuncCode_gqePart += "    // filter tbl_a config"
-            cfgFuncCode_gqePart += "    uint32_t cfga[45];"
-            cfgFuncCode_gqePart += "    " + filter_a_config_call + "(cfga);"
-            cfgFuncCode_gqePart += "    memcpy(&b[3], cfga, sizeof(uint32_t) * 45);"
-            var filter_b_config_call = "gen_pass_fcfg";
-            cfgFuncCode_gqePart += ""
-            cfgFuncCode_gqePart += "    // input table b"
-            var tbl_B_col_list = "signed char id_b[] = {"
-            var num_tbl_B_col = b_col_idx_dict_prev.size
-            for (b <- 0 to 8 - 1) {
-              if (b < rightTableColShuffleIdx.length) {
-                tbl_B_col_list += rightTableColShuffleIdx(b) + ","
-              }
-              else {
-                tbl_B_col_list += "-1,"
-              }
-            }
-            tbl_B_col_list = tbl_B_col_list.stripSuffix(",")
-            tbl_B_col_list += "};"
-            cfgFuncCode_gqePart += "    " + tbl_B_col_list
-            cfgFuncCode_gqePart += "    for (int c = 0; c < 8; ++c) {"
-            cfgFuncCode_gqePart += "        t.range(120 + 8 * c + 7, 120 + 8 * c) = id_b[c];"
-            cfgFuncCode_gqePart += "    }"
-            cfgFuncCode_gqePart += "    // filter tbl_b config"
-            cfgFuncCode_gqePart += "    uint32_t cfgb[45];"
-            cfgFuncCode_gqePart += "    " + filter_b_config_call + "(cfgb);"
-            cfgFuncCode_gqePart += "    memcpy(&b[6], cfgb, sizeof(uint32_t) * 45);"
-            cfgFuncCode_gqePart += ""
-            cfgFuncCode_gqePart += "    // join config"
-            cfgFuncCode_gqePart += "    t.set_bit(0, " + join_on + ");    // join"
-            cfgFuncCode_gqePart += "    t.set_bit(2, " + dual_key_join_on + ");    // dual-key"
-            cfgFuncCode_gqePart += "    t.range(5, 3) = " + join_flag + ";  // hash join flag = 0 for normal, 1 for semi, 2 for anti"
-            cfgFuncCode_gqePart += ""
-            cfgFuncCode_gqePart += "    b[0] = t;"
-            cfgFuncCode_gqePart += "}"
-
-            //gqeJoin configuration bits
-            cfgFuncCode += "    //stream shuffle 1a"
-            cfgFuncCode += "    ap_int<64> shuffle1a_cfg;"
-            for (ss1a <- 0 to 8 - 1) {
-              if (ss1a < leftTableColShuffleIdx.length) {
-                cfgFuncCode += "    shuffle1a_cfg(" + ((ss1a + 1) * 8 - 1).toString + ", " + (ss1a * 8).toString + ") = " + ss1a + ";"
-              } else {
-                cfgFuncCode += "    shuffle1a_cfg(" + ((ss1a + 1) * 8 - 1).toString + ", " + (ss1a * 8).toString + ") = -1;"
-              }
-            }
-            cfgFuncCode += "\n" + "    //stream shuffle 1b"
-            cfgFuncCode += "    ap_int<64> shuffle1b_cfg;"
-            for (ss1b <- 0 to 8 - 1) {
-              if (ss1b < rightTableColShuffleIdx.length) {
-                cfgFuncCode += "    shuffle1b_cfg(" + ((ss1b + 1) * 8 - 1).toString + ", " + (ss1b * 8).toString + ") = " + ss1b + ";"
-              } else {
-                cfgFuncCode += "    shuffle1b_cfg(" + ((ss1b + 1) * 8 - 1).toString + ", " + (ss1b * 8).toString + ") = -1;"
-              }
-            }
-            cfgFuncCode += ""
-            cfgFuncCode += "    // join config"
-            cfgFuncCode += "    t.set_bit(0, " + join_on + ");    // join"
-            cfgFuncCode += "    t.set_bit(2, " + dual_key_join_on + ");    // dual-key"
-            cfgFuncCode += "    t.range(5, 3) = " + join_flag + ";  // hash join flag = 0 for normal, 1 for semi, 2 for anti"
-          }
-          else {
-            cfgFuncCode += "    //stream shuffle 1a"
-            cfgFuncCode += "    ap_int<64> shuffle1a_cfg;"
-            for (ss1a <- 0 to 8 - 1) {
-              if (ss1a < leftTableColShuffleIdx.length) {
-                cfgFuncCode += "    shuffle1a_cfg(" + ((ss1a + 1) * 8 - 1).toString + ", " + (ss1a * 8).toString + ") = " + leftTableColShuffleIdx(ss1a) + ";"
-              } else {
-                cfgFuncCode += "    shuffle1a_cfg(" + ((ss1a + 1) * 8 - 1).toString + ", " + (ss1a * 8).toString + ") = -1;"
-              }
-            }
-            cfgFuncCode += "\n" + "    //stream shuffle 1b"
-            cfgFuncCode += "    ap_int<64> shuffle1b_cfg;"
-            for (ss1b <- 0 to 8 - 1) {
-              if (ss1b < rightTableColShuffleIdx.length) {
-                cfgFuncCode += "    shuffle1b_cfg(" + ((ss1b + 1) * 8 - 1).toString + ", " + (ss1b * 8).toString + ") = " + rightTableColShuffleIdx(ss1b) + ";"
-              } else {
-                cfgFuncCode += "    shuffle1b_cfg(" + ((ss1b + 1) * 8 - 1).toString + ", " + (ss1b * 8).toString + ") = -1;"
-              }
-            }
-            cfgFuncCode += ""
-            cfgFuncCode += "    // join config"
-            cfgFuncCode += "    t.set_bit(0, " + join_on + ");    // join"
-            cfgFuncCode += "    t.set_bit(2, " + dual_key_join_on + ");    // dual-key"
-            cfgFuncCode += "    t.range(5, 3) = " + join_flag + ";  // hash join flag = 0 for normal, 1 for semi, 2 for anti"
-          }
-          var col_idx_dict_prev = collection.mutable.Map[String, Int]()
-          var idx_col_dict_prev = collection.mutable.Map[Int, String]()
-          if (join_operator != null) {
-            var join_output_cols = join_operator._outputCols
-            var outputTableColShuffleIdx = new ListBuffer[Int]()
-            var outputTableColShuffleName = new ListBuffer[String]()
-            if (join_output_cols.length > 8) {
-              cfgFuncCode += "    Unsupported number of output columns more than eight"
-            }
-            for (col <- join_output_cols) {
-              if (rightTablePayloadColShuffleName.indexOf(col) != -1) {
-                // outputTableColShuffleIdx += rightTablePayloadColShuffleName.indexOf(col)
-                col_idx_dict_prev += (col -> rightTablePayloadColShuffleName.indexOf(col))
-                idx_col_dict_prev += (rightTablePayloadColShuffleName.indexOf(col) -> col)
-                //                  col_idx_dict_prev += (col -> (b_col_idx_dict_prev(col) - 1))
-                //                  idx_col_dict_prev += ((b_col_idx_dict_prev(col) - 1) -> col)
-              }
-              else if (leftTablePayloadColShuffleName.indexOf(col) != -1) {
-                // outputTableColShuffleIdx += (leftTablePayloadColShuffleName.indexOf(col) + 6) // +6 because left table col
-                col_idx_dict_prev += (col -> (leftTablePayloadColShuffleName.indexOf(col) + 6))
-                idx_col_dict_prev += ((leftTablePayloadColShuffleName.indexOf(col) + 6) -> col)
-                //                  col_idx_dict_prev += (col -> (a_col_idx_dict_prev(col) - 1 + 6))
-                //                  idx_col_dict_prev += ((a_col_idx_dict_prev(col) - 1 + 6) -> col)
-              }
-              else if (leftTableKeyColShuffleName.indexOf(col) != -1) {
-                // outputTableColShuffleIdx += (leftTableKeyColShuffleName.indexOf(col) + 12)
-                col_idx_dict_prev += (col -> (leftTableKeyColShuffleName.indexOf(col) + 12))
-                idx_col_dict_prev += ((leftTableKeyColShuffleName.indexOf(col) + 12) -> col)
-                //                  col_idx_dict_prev += (col -> (a_col_idx_dict_prev(col) - 1 + 12))
-                //                  idx_col_dict_prev += ((a_col_idx_dict_prev(col) - 1 + 12) -> col)
-              }
-              else if (rightTableKeyColShuffleName.indexOf(col) != -1) {
-                // outputTableColShuffleIdx += (rightTableKeyColShuffleName.indexOf(col) + 12)
-                col_idx_dict_prev += (col -> (rightTableKeyColShuffleName.indexOf(col) + 12))
-                idx_col_dict_prev += ((rightTableKeyColShuffleName.indexOf(col) + 12) -> col)
-                //                  col_idx_dict_prev += (col -> (b_col_idx_dict_prev(col) - 1 + 12))
-                //                  idx_col_dict_prev += ((b_col_idx_dict_prev(col) - 1 + 12) -> col)
-              }
-            }
-          }
-          else {
-            if (a_col_idx_dict_prev.nonEmpty) {
-              col_idx_dict_prev = a_col_idx_dict_prev.clone()
-              idx_col_dict_prev = a_idx_col_dict_prev.clone()
-            }
-            else {
-              col_idx_dict_prev = b_col_idx_dict_prev.clone()
-              idx_col_dict_prev = b_idx_col_dict_prev.clone()
-            }
-          }
-
-          //eval0
-          cfgFuncCode += ""
-          cfgFuncCode += "    //--------------eval0--------------"
-          //    find eval0 terms (if there is any)
-          // Alec-hack
-          // var aggr_operator = getNonGroupByAggregateOperator(this)
-          var aggr_operator = getNonGroupByAggregateOperator(this)
-          var eval0_func = "NOP"
-          var eval0_func_call = "// eval0: NOP"
-          var col_idx_dict_next = collection.mutable.Map[String, Int]()
-          var idx_col_dict_next = collection.mutable.Map[Int, String]()
-
-          if (aggr_operator != null) {
-            if (aggr_operator._aggregate_expression.nonEmpty) {
-              var aggr_expr = aggr_operator._aggregate_expression(0) //first aggr expr
-              var start_idx = 0
-              for (this_aggr_expr <- aggr_operator._aggregate_expression) {
-                for (i_col <- this_aggr_expr.references) { // equvalent as -> for (i_col <- aggr_operator._inputCols) {
-                  col_idx_dict_next += (i_col.toString -> start_idx)
-                  idx_col_dict_next += (start_idx -> i_col.toString)
-                  start_idx += 1
-                }
-              }
-              //move all referenced cols in aggr expr to the front
-              start_idx = 0 //first output col
-              for (ref_col <- aggr_expr.references) {
-                // place reference col and idx to 'start_idx'
-                var prev_idx = col_idx_dict_next(ref_col.toString)
-                col_idx_dict_next(ref_col.toString) = start_idx
-                var prev_col = idx_col_dict_next(start_idx)
-                idx_col_dict_next(start_idx) = ref_col.toString
-                // place the previous col and idx at new location
-                col_idx_dict_next(prev_col) = prev_idx
-                idx_col_dict_next(prev_idx) = prev_col
-                // increment on the next front idx
-                start_idx += 1
-              }
-              // eval dynamicALUCompiler function call
-              var tmp_aggr_expr = new ListBuffer[Expression]()
-              tmp_aggr_expr += aggr_expr
-              if (isPureAggrOperation(tmp_aggr_expr)) {
-                eval0_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
-                eval0_func_call = "// eval0: NOP"
-              }
-              else {
-                eval0_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
-                var aggr_const_i = new Array[Int](4) // default set as zero
-                var strm_order_i = 1
-                var (aggr_str, aggr_const, strm_order) = getAggregateExpression_ALUOPCompiler_cmd(aggr_expr, aggr_const_i, strm_order_i)
-                aggr_str = aggr_str.stripPrefix("(")
-                aggr_str = aggr_str.stripSuffix(")")
-                var ALUOPCompiler = "xf::database::dynamicALUOPCompiler<uint32_t, uint32_t, uint32_t, uint32_t>(\""
-                ALUOPCompiler += aggr_str + "\", "
-                ALUOPCompiler += aggr_const(0) + ", " + aggr_const(1) + ", " + aggr_const(2) + ", " + aggr_const(3) + ", "
-                ALUOPCompiler += "op_eval_0);"
-                eval0_func_call = ALUOPCompiler
-              }
-              if (aggr_operator._nodeType == "Project") {
-                for (o_col <- _outputCols) {
-                  if (!col_idx_dict_next.contains(o_col) && col_idx_dict_prev.contains(o_col)) {
-                    col_idx_dict_next += (o_col -> start_idx)
-                    idx_col_dict_next += (start_idx -> o_col)
-                    start_idx += 1
-                  }
-                }
-              }
-              // add aliase col to col_idx and idx_col table
-              var aliase_col = aggr_expr.toString.split(" AS ").last
-              col_idx_dict_next += (aliase_col -> 8)
-              idx_col_dict_next += (8 -> aliase_col)
-            }
-            else {
-              cfgFuncCode += "    // NO aggregation operation - eval0"
-            }
-          }
-          else {
-            var start_idx = 0
-            for (o_col <- _outputCols) {
-              col_idx_dict_next += (o_col -> start_idx)
-              idx_col_dict_next += (start_idx -> o_col)
-              start_idx += 1
-            }
-          }
-
-          cfgFuncCode += "    //stream shuffle 2"
-          cfgFuncCode += "    ap_int<64> shuffle2_cfg;"
-          for (ss2 <- 0 to 8-1) { //max 8 cols for input table
-            //TODO: fix the line below
-            if (aggr_operator != null && ss2 < idx_col_dict_prev.size) { // input cols - yes aggr
-              var col_name = idx_col_dict_next(ss2)
-              var prev_col_idx = col_idx_dict_prev(col_name)
-              cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = " + prev_col_idx.toString + ";"  + " // " + col_name
-            }
-            else if (aggr_operator == null && ss2 < idx_col_dict_next.size) { // input cols - no aggr
-              var col_name = idx_col_dict_next(ss2)
-              var prev_col_idx = col_idx_dict_prev(col_name)
-              cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = " + prev_col_idx.toString + ";"  + " // " + col_name
-            }
-            else {
-              cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = -1;"
-            }
-          }
-          cfgFuncCode += ""
-          cfgFuncCode += "    ap_uint<289> op_eval_0 = 0;" + " // " + eval0_func
-          cfgFuncCode += "    " + eval0_func_call
-          cfgFuncCode += "    b[1] = op_eval_0;"
-          // update prev with next
-          col_idx_dict_prev = col_idx_dict_next.clone()
-          idx_col_dict_prev = idx_col_dict_next.clone()
-
-          //eval1
-          cfgFuncCode += ""
-          cfgFuncCode += "    //--------------eval1--------------"
-          var eval1_func = "NOP"
-          var eval1_func_call = "// eval1: NOP"
-
-          if (aggr_operator != null) {
-            if (aggr_operator._aggregate_expression.nonEmpty && aggr_operator._aggregate_expression.length == 2) {
-              var aggr_expr = aggr_operator._aggregate_expression(1) //second aggr expr
-              //move all referenced cols in aggr expr to the front
-              var start_idx = 0
-              for (ref_col <- aggr_expr.references) {
-                // place reference col and idx to 'start_idx'
-                var prev_idx = col_idx_dict_next(ref_col.toString)
-                col_idx_dict_next(ref_col.toString) = start_idx
-                var prev_col = idx_col_dict_next(start_idx)
-                idx_col_dict_next(start_idx) = ref_col.toString
-                // place the previous col and idx at new location
-                col_idx_dict_next(prev_col) = prev_idx
-                idx_col_dict_next(prev_idx) = prev_col
-                // increment on the next front idx
-                start_idx += 1
-              }
-
-              // move eval0 result from 8th col to append after the normal cols
-              var eval0_result_col_name = idx_col_dict_next(8)
-              col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size-1
-              idx_col_dict_next.remove(8)
-              idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
-
-              // eval dynamicALUCompiler function call
-              var tmp_aggr_expr = new ListBuffer[Expression]()
-              tmp_aggr_expr += aggr_expr
-              if (isPureEvalOperation(tmp_aggr_expr)) {
-                eval1_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
-                eval1_func_call = ""
-              }
-              else {
-                eval1_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
-                var aggr_const_i = new Array[Int](4) // default set as zero
-                var strm_order_i = 1
-                var (aggr_str, aggr_const, strm_order) = getAggregateExpression_ALUOPCompiler_cmd(aggr_expr, aggr_const_i, strm_order_i)
-                aggr_str = aggr_str.stripPrefix("(")
-                aggr_str = aggr_str.stripSuffix(")")
-                var ALUOPCompiler = "xf::database::dynamicALUOPCompiler<uint32_t, uint32_t, uint32_t, uint32_t>(\""
-                ALUOPCompiler += aggr_str + "\", "
-                ALUOPCompiler += aggr_const(0) + ", " + aggr_const(1) + ", " + aggr_const(2) + ", " + aggr_const(3) + ", "
-                ALUOPCompiler += "op_eval_1);"
-                eval1_func_call = ALUOPCompiler
-              }
-
-              // add aliase col to col_idx and idx_col table
-              var aliase_col = aggr_expr.toString.split(" AS ").last
-              col_idx_dict_next += (aliase_col -> 8)
-              idx_col_dict_next += (8 -> aliase_col)
-            }
-            else {
-              cfgFuncCode += "    // NO aggregation operation - eval1"
-
-              // if eval0 != null, move eval0 result from 8th col to append after the normal cols
-              if (idx_col_dict_next.contains(8)) {
-                var eval0_result_col_name = idx_col_dict_next(8)
-                col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size-1
-                idx_col_dict_next.remove(8)
-                idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
-              }
-            }
-          }
-
-          cfgFuncCode += "    //stream shuffle 3"
-          cfgFuncCode += "    ap_int<64> shuffle3_cfg;"
-          for (ss3 <- 0 to 8-1) { //max 8 cols for input table
-            //TODO: fix the line below
-            if (ss3 < idx_col_dict_prev.size) { // normal cols
-              if (idx_col_dict_prev.contains(ss3)) {
-                var col_name = idx_col_dict_next(ss3)
-                var prev_col_idx = col_idx_dict_prev(col_name)
-                cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = " + prev_col_idx.toString + ";"  + " // " + col_name
-              } else { // eval col - always at idx 8
-                cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = " + 8 + ";"  + " // " + idx_col_dict_prev(8)
-              }
-            }
-            else {
-              cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = -1;"
-            }
-          }
-          cfgFuncCode += ""
-          cfgFuncCode += "    ap_uint<289> op_eval_1 = 0;" + " // " + eval1_func
-          cfgFuncCode += "    " + eval1_func_call
-          cfgFuncCode += "    b[2] = op_eval_1;"
-          // update prev with next
-          col_idx_dict_prev = col_idx_dict_next.clone()
-          idx_col_dict_prev = idx_col_dict_next.clone()
-
-          // aggr
-          cfgFuncCode += ""
-          cfgFuncCode += "    //--------------aggregate--------------"
-          var aggr_on = 0
-          if (aggr_operator != null) {
-            if (!isPureEvalOperation(aggr_operator._aggregate_expression)) {
-              aggr_on = 1
-            }
-          }
-          // Shuffle aggreation cols for the final write-out cols
-          var temp_col_idx_dict_next = collection.mutable.Map[String, Int]()
-          var temp_idx_col_dict_next = collection.mutable.Map[Int, String]()
-          var idx = 0
-          for (o_col <- this._outputCols) {
-            temp_col_idx_dict_next += (o_col -> idx)
-            temp_idx_col_dict_next += (idx -> o_col)
-            idx += 1
-          }
-          col_idx_dict_next = temp_col_idx_dict_next
-          idx_col_dict_next = temp_idx_col_dict_next
-
-          cfgFuncCode += "    //stream shuffle 4"
-          cfgFuncCode += "    ap_int<64> shuffle4_cfg;"
-          for (ss4 <- 0 to 8-1) { //max 8 cols for input table
-            if (ss4 < idx_col_dict_next.size) { // normal cols
-              var col_name = idx_col_dict_next(ss4)
-              var prev_col_idx = col_idx_dict_prev(col_name)
-              cfgFuncCode += "    shuffle4_cfg(" + ((ss4 + 1) * 8 - 1).toString + ", " + (ss4 * 8).toString + ") = " + prev_col_idx.toString + ";"  + " // " + col_name
-            }
-            else {
-              cfgFuncCode += "    shuffle4_cfg(" + ((ss4 + 1) * 8 - 1).toString + ", " + (ss4 * 8).toString + ") = -1;"
-            }
-          }
-          cfgFuncCode += ""
-          cfgFuncCode += "    t.set_bit(1, " + aggr_on + "); // aggr flag"
-          // update prev with next
-          col_idx_dict_prev = col_idx_dict_next.clone()
-          idx_col_dict_prev = idx_col_dict_next.clone()
-
-          // writeout
-          cfgFuncCode += ""
-          cfgFuncCode += "    //--------------writeout--------------"
-          // TODO: output col selection
-          cfgFuncCode += "    // output table col"
-          var tbl_C_col_list = "t.range(191, 184) = {"
-          var c = 0
-          for (c <- 0 to 8 - 1) {
-            if (c < idx_col_dict_prev.size) {
-              tbl_C_col_list += pow(2, c).intValue.toString + "*1 + "
-            } else {
-              tbl_C_col_list += pow(2, c).intValue.toString + "*0 + "
-            }
-          }
-          tbl_C_col_list = tbl_C_col_list.stripSuffix(" + ")
-          tbl_C_col_list += "};"
-          cfgFuncCode += "    " + tbl_C_col_list
-          cfgFuncCode += "    b[0] = t;"
-
-          cfgFuncCode += "\n" + "    //stream shuffle assignment"
-          cfgFuncCode += "    b[0].range(255, 192) = shuffle1a_cfg;"
-          cfgFuncCode += "    b[0].range(319, 256) = shuffle1b_cfg;"
-          cfgFuncCode += "    b[0].range(383, 320) = shuffle2_cfg;"
-          cfgFuncCode += "    b[0].range(447, 384) = shuffle3_cfg;"
-          cfgFuncCode += "    b[0].range(511, 448) = shuffle4_cfg;"
-          cfgFuncCode += "}"
-          for (line <- cfgFuncCode) {
-            _fpgaConfigFuncCode += line
-          }
-          if (sf == 30) {
-            for (line <- cfgFuncCode_gqePart) {
-              _fpgaConfigFuncCode += line
-            }
-          }
-          // TODO: Set up Xilinx L2 module kernels in host code
-          // TODO: Set up Xilinx L2 module kernels
-          var kernel_name = ""
-          var kernel_name_left = ""
-          var kernel_name_right = ""
-          if (sf == 30) {
-            if (joinTblOrderSwapped == false) {
-              if (leftmost_operator._children.head._cpuORfpga == 0 || leftmost_operator._children.head._nodeType == "SerializeFromObject") {
-                kernel_name_left = "krnl_" + nodeOpName + "_part_left"
-                _fpgaKernelSetupCode += "krnlEngine " + kernel_name_left + ";"
-                _fpgaKernelSetupCode += kernel_name_left + " = krnlEngine(program_h, q_h, \"gqePart\");"
-                _fpgaKernelSetupCode += kernel_name_left + ".setup_hp(512, 0, power_of_hpTimes_join, " + join_left_table_name + ", " + join_left_table_name + "_partition" + ", " + nodeCfgCmd_part +");"
-              }
-              if (_children.length > 1 && (rightmost_operator._children.last._cpuORfpga == 0 || rightmost_operator._children.last._nodeType == "SerializeFromObject")) {
-                kernel_name_right = "krnl_" + nodeOpName + "_part_right"
-                _fpgaKernelSetupCode += "krnlEngine " + kernel_name_right + ";"
-                _fpgaKernelSetupCode += kernel_name_right + " = krnlEngine(program_h, q_h, \"gqePart\");"
-                _fpgaKernelSetupCode += kernel_name_right + ".setup_hp(512, 1, power_of_hpTimes_join, " + join_right_table_name + ", " + join_right_table_name + "_partition" + ", " + nodeCfgCmd_part +");"
-              }
-            } else {
-              if (leftmost_operator._children.last._cpuORfpga == 0 || leftmost_operator._children.last._nodeType == "SerializeFromObject") {
-                kernel_name_left = "krnl_" + nodeOpName + "_part_left"
-                _fpgaKernelSetupCode += "krnlEngine " + kernel_name_left + ";"
-                _fpgaKernelSetupCode += kernel_name_left + " = krnlEngine(program_h, q_h, \"gqePart\");"
-                _fpgaKernelSetupCode += kernel_name_left + ".setup_hp(512, 0, power_of_hpTimes_join, " + join_left_table_name + ", " + join_left_table_name + "_partition" + ", " + nodeCfgCmd_part +");"
-              }
-              if (_children.length > 1 && (rightmost_operator._children.head._cpuORfpga == 0 || rightmost_operator._children.head._nodeType == "SerializeFromObject")) {
-                kernel_name_right = "krnl_" + nodeOpName + "_part_right"
-                _fpgaKernelSetupCode += "krnlEngine " + kernel_name_right + ";"
-                _fpgaKernelSetupCode += kernel_name_right + " = krnlEngine(program_h, q_h, \"gqePart\");"
-                _fpgaKernelSetupCode += kernel_name_right + ".setup_hp(512, 1, power_of_hpTimes_join, " + join_right_table_name + ", " + join_right_table_name + "_partition" + ", " + nodeCfgCmd_part +");"
-              }
-            }
-
-            kernel_name = "krnl_" + nodeOpName
-            _fpgaKernelSetupCode += "krnlEngine " + kernel_name + "[hpTimes_join];"
-            _fpgaKernelSetupCode += "for (int i = 0; i < hpTimes_join; i++) {"
-            _fpgaKernelSetupCode += "    " + kernel_name + "[i] = krnlEngine(program_h, q_h, \"gqeJoin\");"
-            _fpgaKernelSetupCode += "}"
-            _fpgaKernelSetupCode += "for (int i = 0; i < hpTimes_join; i++) {"
-            _fpgaKernelSetupCode += "    " + kernel_name + "[i].setup(" + join_left_table_name + "_partition_array[i], " + join_right_table_name + "_partition_array[i], " + _fpgaOutputTableName + "_partition_array" + "[i], " + nodeCfgCmd + ", buftmp_h);"
-            _fpgaKernelSetupCode += "}"
-          }
-          else {
-            kernel_name = "krnl_" + nodeOpName
-            _fpgaKernelSetupCode += "krnlEngine " + kernel_name + ";"
-            _fpgaKernelSetupCode += kernel_name + " = krnlEngine(program_h, q_h, \"gqeJoin\");"
-            // Single child operation - use empty buffer as the right-hand table
-            if (_children.length == 1) {
-              var emptyBufferB_name = "tbl_" + nodeOpName + "_emptyBufferB"
-              _fpgaOutputCode += "Table " + emptyBufferB_name + "(\"" + emptyBufferB_name + "\", 1, 8, \"\");"
-              _fpgaOutputCode += emptyBufferB_name + ".allocateHost();"
-              _fpgaOutputDevAllocateCode += emptyBufferB_name + ".allocateDevBuffer(context_h, 32);"
-              _fpgaKernelSetupCode += kernel_name + ".setup(" + join_left_table_name + ", " + emptyBufferB_name + ", " + _fpgaOutputTableName + ", " + nodeCfgCmd + ", buftmp_h);"
-            } else {
-              _fpgaKernelSetupCode += kernel_name + ".setup(" + join_left_table_name + ", " + join_right_table_name + ", " + _fpgaOutputTableName + ", " + nodeCfgCmd + ", buftmp_h);"
-            }
-          }
-          // TODO: Set up transfer engine
-          _fpgaTransEngineName = "trans_" + nodeOpName
-          _fpgaTransEngineSetupCode += "transEngine " + _fpgaTransEngineName + ";"
-          _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".setq(q_h);"
-          if (sf == 30) {
-            if ((leftmost_operator != null && leftmost_operator._children.last._cpuORfpga == 0) ||
-              (rightmost_operator != null && rightmost_operator._children.head._cpuORfpga == 0)) {
-              _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + nodeCfgCmd_part + "));"
-            }
-          }
-          _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + nodeCfgCmd + "));"
-          for (ch <- _children) {
-            if (ch._operation.isEmpty) {
-              _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + ch._fpgaOutputTableName + "));"
-            }
-          }
-          // TODO: Set up transfer engine output
-          var fpgaTransEngineOutputName = "trans_" + nodeOpName + "_out"
-          if ((parentNode == null) || ((parentNode != null) && ((parentNode.cpuORfpga == 1 && parentNode.fpgaOverlayType != this._fpgaOverlayType) || (parentNode.cpuORfpga == 0)))) {
-            _fpgaTransEngineSetupCode += "transEngine " + fpgaTransEngineOutputName + ";"
-            _fpgaTransEngineSetupCode += fpgaTransEngineOutputName + ".setq(q_h);"
-          }
-          _fpgaTransEngineSetupCode += "q_h.finish();"
-          // TODO: Set up events
-          var h2d_wr_name = "events_h2d_wr_" + nodeOpName
-          var d2h_rd_name = "events_d2h_rd_" + nodeOpName
-          var events_name = "events_" + nodeOpName
-          _fpgaEventsH2DName = h2d_wr_name
-          _fpgaEventsD2HName = d2h_rd_name
-          _fpgaEventsName = events_name
-          _fpgaKernelEventsCode += "std::vector<cl::Event> " + h2d_wr_name + ";"
-          _fpgaKernelEventsCode += "std::vector<cl::Event> " + d2h_rd_name + ";"
-          if (sf == 30) {
-            _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_name + "[2];"
-          } else {
-            _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_name + ";"
-          }
-          _fpgaKernelEventsCode += h2d_wr_name + ".resize(1);"
-          _fpgaKernelEventsCode += d2h_rd_name + ".resize(1);"
-          if (sf == 30) {
-            var num_gqe_part_events = 0
-            if (leftmost_operator._children.last._cpuORfpga == 0 || leftmost_operator._children.last._nodeType == "SerializeFromObject") {
-              num_gqe_part_events += 1
-            }
-            if (_children.length > 1 && (rightmost_operator._children.head._cpuORfpga == 0 || rightmost_operator._children.head._nodeType == "SerializeFromObject")) {
-              num_gqe_part_events += 1
-            }
-            _fpgaKernelEventsCode += events_name + "[0].resize(" + num_gqe_part_events.toString + ");"
-            _fpgaKernelEventsCode += events_name + "[1].resize(hpTimes_join);"
-          } else {
-            _fpgaKernelEventsCode += events_name + ".resize(1);"
-          }
-          var events_grp_name = "events_grp_" + nodeOpName
-          _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_grp_name + ";"
-          var prev_events_grp_name = "prev_events_grp_" + nodeOpName
-          _fpgaKernelEventsCode += "std::vector<cl::Event> " + prev_events_grp_name + ";"
-          for (ch <- _children) {
-            if (ch.operation.nonEmpty && ch._cpuORfpga == 1 && this._fpgaOverlayType == ch.fpgaOverlayType) {
-              _fpgaKernelRunCode += prev_events_grp_name + ".push_back(" + ch.fpgaEventsH2DName + "[0]);"
-            }
-          }
-          // TODO: Run Xilinx L2 module kernels and link events
-          for (ch <- _children) {
-            if ((ch.cpuORfpga == 0) || ((ch.cpuORfpga == 1 && this._fpgaOverlayType != ch.fpgaOverlayType))) {
-              if (ch._operation.nonEmpty) {
-                _fpgaKernelRunCode += _fpgaTransEngineName + ".add(&(" + ch._fpgaOutputTableName + "));"
-              }
-            }
-          }
-          _fpgaKernelRunCode += _fpgaTransEngineName + ".host2dev(0, &(" + prev_events_grp_name + "), &(" + _fpgaEventsH2DName + "[0]));"
-          _fpgaKernelRunCode += events_grp_name + ".push_back(" + _fpgaEventsH2DName + "[0]);"
-          for (ch <- _children) {
-            if (ch.operation.nonEmpty && ch._cpuORfpga == 1 && this._fpgaOverlayType == ch.fpgaOverlayType) {
-              if (sf == 30) {
-                _fpgaKernelRunCode += events_grp_name + ".insert(std::end(" + events_grp_name + "), std::begin(" + ch.fpgaEventsName + "[0]), std::end(" + ch.fpgaEventsName + "[0]));"
-                _fpgaKernelRunCode += events_grp_name + ".insert(std::end(" + events_grp_name + "), std::begin(" + ch.fpgaEventsName + "[1]), std::end(" + ch.fpgaEventsName + "[1]));"
-              } else {
-                _fpgaKernelRunCode += events_grp_name + ".push_back(" + ch.fpgaEventsName + "[0]);"
-              }
-            }
-          }
-          if (sf == 30) {
-            var num_gqe_part_events = 0
-            if (joinTblOrderSwapped == false) {
-              if (leftmost_operator._children.head._cpuORfpga == 0 || leftmost_operator._children.head._nodeType == "SerializeFromObject") {
-                _fpgaKernelRunCode += kernel_name_left + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][" + num_gqe_part_events.toString + "]));"
-                num_gqe_part_events += 1
-              }
-              if (_children.length > 1 && (rightmost_operator._children.last._cpuORfpga == 0 || rightmost_operator._children.last._nodeType == "SerializeFromObject")) {
-                _fpgaKernelRunCode += kernel_name_right + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][" + num_gqe_part_events.toString + "]));"
-              }
-            } else {
-              if (leftmost_operator._children.last._cpuORfpga == 0 || leftmost_operator._children.last._nodeType == "SerializeFromObject") {
-                _fpgaKernelRunCode += kernel_name_left + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][" + num_gqe_part_events.toString + "]));"
-                num_gqe_part_events += 1
-              }
-              if (_children.length > 1 && (rightmost_operator._children.head._cpuORfpga == 0 || rightmost_operator._children.head._nodeType == "SerializeFromObject")) {
-                _fpgaKernelRunCode += kernel_name_right + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][" + num_gqe_part_events.toString + "]));"
-              }
-            }
-            _fpgaKernelRunCode += "for (int i(0); i < hpTimes_join; ++i) {"
-            if (num_gqe_part_events == 0) {
-              _fpgaKernelRunCode += "    " + kernel_name + "[i].run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[1][i]));"
-            } else {
-              _fpgaKernelRunCode += "    " + kernel_name + "[i].run(0, &(" + _fpgaEventsName + "[0]), &(" + _fpgaEventsName + "[1][i]));"
-            }
-            _fpgaKernelRunCode += "}"
-          } else {
-            _fpgaKernelRunCode += kernel_name + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0]));"
-          }
-
-          if (parentNode == null) {
-            _fpgaKernelRunCode += ""
-            if (sf == 30) {
-              _fpgaKernelRunCode += "for (int i(0); i < hpTimes_join; ++i) {"
-              _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "_partition_array" + "[i]));"
-              _fpgaKernelRunCode += "}"
-              _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "[1]), &(" + _fpgaEventsD2HName + "[0]));"
-            } else {
-              _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "));"
-              _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "), &(" + _fpgaEventsD2HName + "[0]));"
-            }
-            _fpgaKernelRunCode += "q_h.flush();"
-            _fpgaKernelRunCode += "q_h.finish();"
-          }
-          if (parentNode != null) {
-            // two consecutive overlay calls are for different overlay types - TODO: add support for when two overlay call types are the same but on two different FPGA devices
-            // special case: outer join
-            if (this._nodeType == "JOIN_LEFTANTI" && this._children(0)._nodeType == "JOIN_INNER" && this._joining_expression == this._children(0)._joining_expression) {
-              _fpgaKernelRunCode += ""
-              if (sf == 30) {
-                _fpgaKernelRunCode += "for (int i(0); i < hpTimes_join; ++i) {"
-                _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "_partition_array" + "[i]));"
-                _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + this._children(0)._fpgaOutputTableName + "_partition_array" + "[i]));"
-                _fpgaKernelRunCode += "}"
-                _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "[1]), &(" + _fpgaEventsD2HName + "[0]));"
-              } else {
-                _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "));"
-                _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + this._children(0)._fpgaOutputTableName + "));"
-                _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "), &(" + _fpgaEventsD2HName + "[0]));"
-              }
-              _fpgaKernelRunCode += "q_h.flush();"
-              _fpgaKernelRunCode += "q_h.finish();"
-
-              // combine inner and anti join tables results as the outer join table results
-              var tmp_join_col_concatenate = "SW_" + nodeOpName + "_concatenate("
-              tmp_join_col_concatenate += _fpgaOutputTableName + ", " + this._children(0)._fpgaOutputTableName + ");"
-              _fpgaKernelRunCode += tmp_join_col_concatenate
-
-              var sw_join_concatenate_func_cal = "void " + "SW_" + nodeOpName + "_concatenate("
-              sw_join_concatenate_func_cal += "Table &" + _fpgaOutputTableName + ", "
-              sw_join_concatenate_func_cal += "Table &" + this._children(0)._fpgaOutputTableName
-              sw_join_concatenate_func_cal += ") {"
-              joinConcatenateFuncCode += sw_join_concatenate_func_cal
-              joinConcatenateFuncCode += "    int start_idx = " + _fpgaOutputTableName + ".getNumRow();"
-              joinConcatenateFuncCode += "    int nrow = " + this._children(0)._fpgaOutputTableName + ".getNumRow();"
-              joinConcatenateFuncCode += "    int i = 0;"
-              joinConcatenateFuncCode += "    for (int r(start_idx); r<start_idx+nrow; ++r) {"
-              var col_idx = 0
-              for (o_col <- this._outputCols) {
-                var output_col_type = getColumnType(o_col, dfmap)
-                if (output_col_type == "IntegerType") {
-                  joinConcatenateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + this._children(0)._fpgaOutputTableName + ".getInt32(i, " + col_idx.toString + ");"
-                  joinConcatenateFuncCode += "        " + _fpgaOutputTableName + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
-                }
-                else {
-                  joinConcatenateFuncCode += "        Error: unsupported data type - revisit cpu/fpga determination logic"
-                }
-                col_idx += 1
-              }
-              joinConcatenateFuncCode += "        i++;"
-              joinConcatenateFuncCode += "    }"
-              joinConcatenateFuncCode += "    " + _fpgaOutputTableName + ".setNumRow(start_idx + nrow);"
-              joinConcatenateFuncCode += "    std::cout << \"" + _fpgaOutputTableName + " #Row: \" << " + _fpgaOutputTableName + ".getNumRow() << std::endl;"
-              joinConcatenateFuncCode += "}"
-
-              for (line <- joinConcatenateFuncCode) {
-                _fpgaSWFuncCode += line
-              }
-
-              // transfer table data to another table to be used in a different 'context'
-              if (parentNode.fpgaOverlayType != this._fpgaOverlayType) {
-                _fpgaKernelRunCode += _fpgaOutputTableName + ".copyTableData(&(" + _fpgaOutputTableName.stripSuffix("_preprocess") + "));"
-                _fpgaOutputTableName = _fpgaOutputTableName.stripSuffix("_preprocess")
-              }
-            }
-            else if ((parentNode.cpuORfpga == 1 && parentNode.fpgaOverlayType != this._fpgaOverlayType) || (parentNode.cpuORfpga == 0)) {
-              _fpgaKernelRunCode += ""
-              if (sf == 30) {
-                _fpgaKernelRunCode += "for (int i(0); i < hpTimes_join; ++i) {"
-                _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "_partition_array" + "[i]));"
-                _fpgaKernelRunCode += "}"
-                _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "[1]), &(" + _fpgaEventsD2HName + "[0]));"
-              } else {
-                _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "));"
-                _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "), &(" + _fpgaEventsD2HName + "[0]));"
-              }
-              _fpgaKernelRunCode += "q_h.flush();"
-              _fpgaKernelRunCode += "q_h.finish();"
-
-              if (parentNode._fpgaOverlayType != this._fpgaOverlayType && parentNode.cpuORfpga != 0) {
-                // transfer table data to another table to be used in a different 'context'
-                _fpgaKernelRunCode += "WaitForEvents(" + _fpgaEventsD2HName + ");"
-                _fpgaKernelRunCode += _fpgaOutputTableName + ".copyTableData(&(" + _fpgaOutputTableName.stripSuffix("_preprocess") + "));"
-                _fpgaOutputTableName = _fpgaOutputTableName.stripSuffix("_preprocess")
-              }
-            }
-          }
+        if (_fpgaOverlayType == 0) {// gqe_join-0, gqe_aggr-1, gqe_part-2
+          genFPGAJoinOverlayCode(parentNode, dfmap, nodeOpName, sf, queryNum)
         }
         else if (_fpgaOverlayType == 1) { // gqe_join-0, gqe_aggr-1, gqe_part-2
-          // tag:overlay1
-          var nodeCfgCmd = "cfg_" + nodeOpName + "_cmds"
-          var nodeGetCfgFuncName = "get_cfg_dat_" + nodeOpName + "_gqe_aggr"
-          _fpgaConfigCode += "AggrCfgCmd " + nodeCfgCmd + ";"
-          _fpgaConfigCode += nodeCfgCmd + ".allocateHost();"
-          _fpgaConfigCode += nodeGetCfgFuncName + "(" + nodeCfgCmd + ".cmd);"
-          _fpgaConfigCode += nodeCfgCmd + ".allocateDevBuffer(context_a, 32);"
-
-          var nodeCfgCmd_out = "cfg_" + nodeOpName + "_cmds_out"
-          _fpgaConfigCode += "AggrCfgCmd " + nodeCfgCmd_out + ";"
-          _fpgaConfigCode += nodeCfgCmd_out + ".allocateHost();"
-          _fpgaConfigCode += nodeCfgCmd_out + ".allocateDevBuffer(context_a, 33);"
-
-          // Generate the function that generates the Xilinx L2 module configurations
-          var aggrConsolidateFuncCode = new ListBuffer[String]()
-          var cfgFuncCode = new ListBuffer[String]()
-          cfgFuncCode += "void " + nodeGetCfgFuncName + "(ap_uint<32>* buf) {"
-          var cfgFuncCode_gqePart = new ListBuffer[String]()
-          if (sf == 30) {
-            cfgFuncCode_gqePart += "void " + nodeGetCfgFuncName + "_part" + "(ap_uint<512>* hbuf) {"
-          }
-          var innerMostOperator = getInnerMostBindedOperator(this)
-          var input_table_col = innerMostOperator._children.head.outputCols
-          var input_table_name = innerMostOperator._children.head._fpgaOutputTableName
-          var nodeCfgCmd_part = "cfg_" + nodeOpName + "_cmds_part"
-          if (sf == 30) {
-            if (innerMostOperator._children.head._cpuORfpga == 0 || innerMostOperator._children.head._nodeType == "SerializeFromObject"){
-              _fpgaConfigCode += "cfgCmd " + nodeCfgCmd_part + ";"
-              _fpgaConfigCode += nodeCfgCmd_part + ".allocateHost();"
-              _fpgaConfigCode += nodeGetCfgFuncName + "_part" + " (" + nodeCfgCmd_part + ".cmd);"
-              _fpgaConfigCode += nodeCfgCmd_part + ".allocateDevBuffer(context_a, 32);"
-            }
-          }
-          // ----------------------------------- Debug info -----------------------------------
-          cfgFuncCode += "    // StringRowIDSubstitution: " + _stringRowIDSubstitution + " StringRowIDBackSubstitution: " + _stringRowIDBackSubstitution
-          cfgFuncCode += "    // Supported operation: " + _nodeType
-          cfgFuncCode += "    // Operation: " + _operation
-          for (binded_overlay <- _bindedOverlayInstances) {
-            cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
-          }
-          for (binded_overlay <- _bindedOverlayInstances_left) {
-            cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
-          }
-          for (binded_overlay <- _bindedOverlayInstances_right) {
-            cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
-          }
-          cfgFuncCode += "    // Input Table: " + input_table_col
-          cfgFuncCode += "    // Output Table: " + _outputCols
-          cfgFuncCode += "    // Node Depth: " + _treeDepth
-
-          cfgFuncCode += "    ap_uint<32>* config = buf;"
-          cfgFuncCode += "    memset(config, 0, sizeof(ap_uint<32>) * 83);"
-          if (sf == 30) {
-            cfgFuncCode_gqePart += "    ap_uint<512>* b = hbuf;"
-            cfgFuncCode_gqePart += "    memset(b, 0, sizeof(ap_uint<512>) * 9);"
-            cfgFuncCode_gqePart += "    ap_uint<512> t = 0;"
-            cfgFuncCode_gqePart += ""
-          }
-
-          // A record to track how inputs cols navigates through the overlay
-          var col_idx_dict_prev = collection.mutable.Map[String, Int]()
-          var idx_col_dict_prev = collection.mutable.Map[Int, String]()
-          var tmp_idx = 0
-          for (i_col <- input_table_col) {
-            col_idx_dict_prev += (i_col -> tmp_idx)
-            idx_col_dict_prev += (tmp_idx -> i_col)
-            tmp_idx += 1
-          }
-
-          //eval0 - Alec-added
-          cfgFuncCode += ""
-          cfgFuncCode += "    // eval0"
-          var eval0_func = "NOP"
-          var eval0_func_call = "// eval0: NOP"
-          var groupby_operator = getGroupByAggregateOperator(this)
-          var col_idx_dict_next = col_idx_dict_prev.clone()
-          var idx_col_dict_next = idx_col_dict_prev.clone()
-          if (groupby_operator != null && groupby_operator._aggregate_expression.nonEmpty) {
-            // get first aggr expr (w/ evaluation)
-            var aggr_expr = groupby_operator._aggregate_expression(0)
-            var first_expr = true
-            var eval_found = false
-            for (eval_expr <- groupby_operator._aggregate_expression) {
-              if (!isPureAggrOperation_sub(eval_expr) && first_expr && !eval_found) {
-                aggr_expr = eval_expr
-                first_expr = false
-                eval_found = true
-              }
-            }
-            if (eval_found) {
-              // move all referenced cols in aggr expr to the front
-              var start_idx = 0
-              for (ref_col <- aggr_expr.references) {
-                // place reference col and idx to 'start_idx'
-                var prev_idx = col_idx_dict_next(ref_col.toString)
-                col_idx_dict_next(ref_col.toString) = start_idx
-                var prev_col = idx_col_dict_next(start_idx)
-                idx_col_dict_next(start_idx) = ref_col.toString
-                // place the previous col and idx at new location
-                col_idx_dict_next(prev_col) = prev_idx
-                idx_col_dict_next(prev_idx) = prev_col
-                // increment on the next front idx
-                start_idx += 1
-              }
-              // eval dynamicALUCompiler function call
-              var tmp_aggr_expr = new ListBuffer[Expression]()
-              tmp_aggr_expr += aggr_expr
-              if (isPureAggrOperation(tmp_aggr_expr)) {
-                eval0_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
-                eval0_func_call = "// eval0: NOP"
-              }
-              else {
-                eval0_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
-                var aggr_const_i = new Array[Int](4) // default set as zero
-                var strm_order_i = 1
-                var (aggr_str, aggr_const, strm_order) = getAggregateExpression_ALUOPCompiler_cmd(aggr_expr, aggr_const_i, strm_order_i)
-                aggr_str = aggr_str.stripPrefix("(")
-                aggr_str = aggr_str.stripSuffix(")")
-                var ALUOPCompiler = "xf::database::dynamicALUOPCompiler<uint32_t, uint32_t, uint32_t, uint32_t>(\""
-                ALUOPCompiler += aggr_str + "\", "
-                ALUOPCompiler += aggr_const(0) + ", " + aggr_const(1) + ", " + aggr_const(2) + ", " + aggr_const(3) + ", "
-                ALUOPCompiler += "op_eval_0);"
-                eval0_func_call = ALUOPCompiler
-
-                // add aliase col to col_idx and idx_col table
-                var aliase_col = aggr_expr.toString.split(" AS ").last
-                col_idx_dict_next += (aliase_col -> 8)
-                idx_col_dict_next += (8 -> aliase_col)
-              }
-            }
-            else {
-              cfgFuncCode += "    // NO evaluation 0 in aggregation expression - eval0"
-            }
-          }
-          else {
-            cfgFuncCode += "    // NO aggregation operation - eval0"
-          }
-
-          cfgFuncCode += "    ap_uint<32> t;"
-          var i_tbl_col_list = "signed char id[] = {"
-          // input col assignment
-          for (col_idx <- 0 to 8-1) { //max 8 cols for input table
-            if (col_idx < idx_col_dict_prev.size) { // input cols
-              var col_name = idx_col_dict_next(col_idx)
-              var prev_col_idx = col_idx_dict_prev(col_name)
-              i_tbl_col_list += prev_col_idx.toString + ","
-            }
-            else {
-              i_tbl_col_list += "-1,"
-            }
-          }
-          i_tbl_col_list = i_tbl_col_list.stripSuffix(",")
-          i_tbl_col_list += "};"
-          cfgFuncCode += "    " + i_tbl_col_list
-          cfgFuncCode += "    for (int c = 0; c < 4; ++c) {"
-          cfgFuncCode += "        t.range(8 * c + 7, 8 * c) = id[c];"
-          cfgFuncCode += "    }"
-          cfgFuncCode += "    config[0] = t;"
-          cfgFuncCode += "    for (int c = 0; c < 4; ++c) {"
-          cfgFuncCode += "        t.range(8 * c + 7, 8 * c) = id[c + 4];"
-          cfgFuncCode += "    }"
-          cfgFuncCode += "    config[1] = t;"
-          cfgFuncCode += ""
-          cfgFuncCode += "    ap_uint<289> op_eval_0 = 0;" + " // " + eval0_func
-          cfgFuncCode += "    " + eval0_func_call
-          cfgFuncCode += "    for (int i = 0; i < 9; i++) {"
-          cfgFuncCode += "        config[i + 2] = op_eval_0(32 * (i + 1) - 1, 32 * i);"
-          cfgFuncCode += "    }"
-          cfgFuncCode += "    config[11] = op_eval_0[288];"
-          // update prev with next
-          col_idx_dict_prev = col_idx_dict_next.clone()
-          idx_col_dict_prev = idx_col_dict_next.clone()
-
-          //eval1 - Alec-added
-          cfgFuncCode += ""
-          cfgFuncCode += "    // eval0 -> eval1"
-          var eval1_func = "NOP"
-          var eval1_func_call = "// eval1: NOP"
-          if (groupby_operator != null && groupby_operator._aggregate_expression.nonEmpty) {
-            // get second aggr expr (w/ evaluation)
-            var aggr_expr = groupby_operator._aggregate_expression(0)
-            var first_expr = true
-            var second_expr = true
-            var eval_found = false
-            for (eval_expr <- groupby_operator._aggregate_expression) {
-              if (!isPureAggrOperation_sub(eval_expr)) {
-                if (first_expr) {
-                  first_expr = false
-                }
-                else {
-                  if (second_expr && !eval_found) {
-                    aggr_expr = eval_expr
-                    eval_found = true
-                  }
-                }
-              }
-              else { //pure aggregation cols e.g., sum(col_name)
-                var aliase_col = eval_expr.toString.split(" AS ").last
-                var ref_col_idx = -1
-                if (eval_expr.references.nonEmpty) {
-                  var ref_col = eval_expr.references.head.toString
-                  ref_col_idx = col_idx_dict_next(ref_col)
-                }
-                col_idx_dict_next += (aliase_col -> ref_col_idx)
-              }
-            }
-            if (eval_found) {
-              //move all referenced cols in aggr expr to the front
-              var start_idx = 0
-              for (ref_col <- aggr_expr.references) {
-                // place reference col and idx to 'start_idx'
-                var prev_idx = col_idx_dict_next(ref_col.toString)
-                col_idx_dict_next(ref_col.toString) = start_idx
-                var prev_col = idx_col_dict_next(start_idx)
-                idx_col_dict_next(start_idx) = ref_col.toString
-                // place the previous col and idx at new location
-                col_idx_dict_next(prev_col) = prev_idx
-                idx_col_dict_next(prev_idx) = prev_col
-                // increment on the next front idx
-                start_idx += 1
-              }
-
-              // move eval0 result from 8th col to append after the normal cols
-              var eval0_result_col_name = idx_col_dict_next(8)
-              col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size - 1
-              idx_col_dict_next.remove(8)
-              idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
-
-              // eval dynamicALUCompiler function call
-              var tmp_aggr_expr = new ListBuffer[Expression]()
-              tmp_aggr_expr += aggr_expr
-              if (isPureAggrOperation(tmp_aggr_expr)) {
-                eval1_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
-                eval1_func_call = ""
-              }
-              else {
-                eval1_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
-                var aggr_const_i = new Array[Int](4) // default set as zero
-                var strm_order_i = 1
-                var (aggr_str, aggr_const, strm_order) = getAggregateExpression_ALUOPCompiler_cmd(aggr_expr, aggr_const_i, strm_order_i)
-                aggr_str = aggr_str.stripPrefix("(")
-                aggr_str = aggr_str.stripSuffix(")")
-                var ALUOPCompiler = "xf::database::dynamicALUOPCompiler<uint32_t, uint32_t, uint32_t, uint32_t>(\""
-                ALUOPCompiler += aggr_str + "\", "
-                ALUOPCompiler += aggr_const(0) + ", " + aggr_const(1) + ", " + aggr_const(2) + ", " + aggr_const(3) + ", "
-                ALUOPCompiler += "op_eval_1);"
-                eval1_func_call = ALUOPCompiler
-
-                // add aliase col to col_idx and idx_col table
-                var aliase_col = aggr_expr.toString.split(" AS ").last
-                col_idx_dict_next += (aliase_col -> 8)
-                idx_col_dict_next += (8 -> aliase_col)
-              }
-            }
-            else {
-              cfgFuncCode += "    // NO evaluation 1 in aggregation expression - eval1"
-              // if eval0 != null, move eval0 result from 8th col to append after the normal cols
-              if (idx_col_dict_next.contains(8)) {
-                var eval0_result_col_name = idx_col_dict_next(8)
-                col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size-1
-                idx_col_dict_next.remove(8)
-                idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
-              }
-            }
-          }
-          else {
-            cfgFuncCode += "    // NO aggregation operation - eval1"
-            // if eval0 != null, move eval0 result from 8th col to append after the normal cols
-            if (idx_col_dict_next.contains(8)) {
-              var eval0_result_col_name = idx_col_dict_next(8)
-              col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size-1
-              idx_col_dict_next.remove(8)
-              idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
-            }
-          }
-
-          // input col assignment
-          cfgFuncCode += "    ap_int<64> shuffle1_cfg;"
-          for (ss1 <- 0 to 8 - 1) {
-            if (ss1 < col_idx_dict_prev.size) {
-              if (idx_col_dict_prev.contains(ss1)) { // normal cols
-                var col_name = idx_col_dict_next(ss1)
-                var prev_col_idx = col_idx_dict_prev(col_name)
-                cfgFuncCode += "    shuffle1_cfg(" + ((ss1 + 1) * 8 - 1).toString + ", " + (ss1 * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + col_name
-              } else { //eval col - always at idx 8
-                cfgFuncCode += "    shuffle1_cfg(" + ((ss1 + 1) * 8 - 1).toString + ", " + (ss1 * 8).toString + ") = " + "8" + ";" + " // " + idx_col_dict_prev(8)
-              }
-            } else {
-              cfgFuncCode += "    shuffle1_cfg(" + ((ss1 + 1) * 8 - 1).toString + ", " + (ss1 * 8).toString + ") = -1;"
-            }
-          }
-          cfgFuncCode += "    config[67] = shuffle1_cfg(31, 0);"
-          cfgFuncCode += "    config[68] = shuffle1_cfg(63, 32);"
-          cfgFuncCode += ""
-          cfgFuncCode += "    ap_uint<289> op_eval_1 = 0;" + " // " + eval1_func
-          cfgFuncCode += "    " + eval1_func_call
-          cfgFuncCode += "    for (int i = 0; i < 9; i++) {"
-          cfgFuncCode += "        config[i + 12] = op_eval_1(32 * (i + 1) - 1, 32 * i);"
-          cfgFuncCode += "    }"
-          cfgFuncCode += "    config[21] = op_eval_1[288];"
-          // update prev with next
-          col_idx_dict_prev = col_idx_dict_next.clone()
-          idx_col_dict_prev = idx_col_dict_next.clone()
-
-          //filter - Alec-added
-          cfgFuncCode += ""
-          cfgFuncCode += "    // eval1 -> filter"
-          var filter_operator = getFilterOperator(this)
-          var filter_config_func_call = ""
-          if (filter_operator == null || filter_operator._filtering_expression == null) {
-            filter_config_func_call = "gen_pass_fcfg"
-          }
-          else {
-            // TODO: re-shuffle input col to be situated in the first 4 col
-            var tmp_idx = 0
-            for (ref_col <- filter_operator._filtering_expression.references) {
-              var prev_ref_idx = col_idx_dict_next(ref_col.toString)
-              var tmp_col = idx_col_dict_next(tmp_idx)
-              col_idx_dict_next(tmp_col) = prev_ref_idx
-              idx_col_dict_next(prev_ref_idx) = ref_col.toString
-              col_idx_dict_next(ref_col.toString) = tmp_idx
-              idx_col_dict_next(tmp_idx) = ref_col.toString
-              tmp_idx += 1
-            }
-            var filterCfgFuncName = "gen_fcfg_" + _fpgaNodeName
-            filter_config_func_call = filterCfgFuncName
-            var filterCfgFuncCode = getFilterConfigFuncCode(filterCfgFuncName, filter_operator, col_idx_dict_next)
-            for (line <- filterCfgFuncCode) {
-              _fpgaConfigFuncCode += line
-            }
-          }
-          // input col assignment
-          cfgFuncCode += "    ap_int<64> shuffle2_cfg;"
-          for (ss2 <- 0 to 8 - 1) {
-            if (ss2 < col_idx_dict_prev.size) {
-              if (idx_col_dict_prev.contains(ss2)) { // normal cols
-                var col_name = idx_col_dict_next(ss2)
-                var prev_col_idx = col_idx_dict_prev(col_name)
-                cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + col_name
-              }
-              else if (idx_col_dict_prev.contains(8)) { //eval col - always at idx 8
-                cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = " + "8" + ";" + " // " + idx_col_dict_prev(8)
-              }
-              else {
-                cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = -1;"
-              }
-            } else {
-              cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = -1;"
-            }
-          }
-          cfgFuncCode += "    config[69] = shuffle2_cfg(31, 0);"
-          cfgFuncCode += "    config[70] = shuffle2_cfg(63, 32);"
-          cfgFuncCode += ""
-          cfgFuncCode += "    uint32_t fcfg[45];"
-          cfgFuncCode += "    " + filter_config_func_call + "(fcfg);"
-          cfgFuncCode += "    memcpy(&config[22], fcfg, sizeof(uint32_t) * 45);"
-          // update prev with next
-          col_idx_dict_prev = col_idx_dict_next.clone()
-          idx_col_dict_prev = idx_col_dict_next.clone()
-
-          //groupBy - Alec-added
-          cfgFuncCode += ""
-          cfgFuncCode += "    // filter -> groupBy"
-          // input key col assignment
-          if (sf == 30) {
-            //gqePart configuration bits
-            var filter_a_config_call = "gen_pass_fcfg";
-            cfgFuncCode_gqePart += "    // input table a"
-            var tbl_A_col_list = "signed char id_a[] = {"
-            var col_name = ""
-            var col_idx = -1
-            var col_counter = 0
-            for (key_col <- groupby_operator._groupBy_operation) { // key cols
-              col_idx = col_idx_dict_prev(key_col)
-              tbl_A_col_list += col_idx.toString + ","
-              col_counter += 1
-            }
-            for (o_col <- groupby_operator._outputCols) {
-              if (!groupby_operator._groupBy_operation.contains(o_col)) { // pld cols
-                col_idx = col_idx_dict_prev(o_col)
-                tbl_A_col_list += col_idx.toString + ","
-                col_counter += 1
-              }
-            }
-            while(col_counter < 8) {
-              tbl_A_col_list += "-1,"
-              col_counter += 1
-            }
-            tbl_A_col_list = tbl_A_col_list.stripSuffix(",")
-            tbl_A_col_list += "};"
-            cfgFuncCode_gqePart += "    " + tbl_A_col_list
-            cfgFuncCode_gqePart += "    for (int c = 0; c < 8; ++c) {"
-            cfgFuncCode_gqePart += "        t.range(56 + 8 * c + 7, 56 + 8 * c) = id_a[c];"
-            cfgFuncCode_gqePart += "    }"
-            cfgFuncCode_gqePart += "    // filter tbl_a config"
-            cfgFuncCode_gqePart += "    uint32_t cfga[45];"
-            cfgFuncCode_gqePart += "    " + filter_a_config_call + "(cfga);"
-            cfgFuncCode_gqePart += "    memcpy(&b[3], cfga, sizeof(uint32_t) * 45);"
-            var filter_b_config_call = "gen_pass_fcfg";
-            cfgFuncCode_gqePart += ""
-            cfgFuncCode_gqePart += "    // input table b"
-            var tbl_B_col_list = "signed char id_b[] = {"
-            for (b <- 0 to 8 - 1) {
-              tbl_B_col_list += "-1,"
-            }
-            tbl_B_col_list = tbl_B_col_list.stripSuffix(",")
-            tbl_B_col_list += "};"
-            cfgFuncCode_gqePart += "    " + tbl_B_col_list
-            cfgFuncCode_gqePart += "    for (int c = 0; c < 8; ++c) {"
-            cfgFuncCode_gqePart += "        t.range(120 + 8 * c + 7, 120 + 8 * c) = id_b[c];"
-            cfgFuncCode_gqePart += "    }"
-            cfgFuncCode_gqePart += "    // filter tbl_b config"
-            cfgFuncCode_gqePart += "    uint32_t cfgb[45];"
-            cfgFuncCode_gqePart += "    " + filter_b_config_call + "(cfgb);"
-            cfgFuncCode_gqePart += "    memcpy(&b[6], cfgb, sizeof(uint32_t) * 45);"
-            cfgFuncCode_gqePart += ""
-            cfgFuncCode_gqePart += "    // join config"
-            cfgFuncCode_gqePart += "    t.set_bit(0, 1);    // join"
-            var dual_key_join_on = 0
-            if (groupby_operator._groupBy_operation.length == 2) {
-              dual_key_join_on = 1
-            } else {
-              dual_key_join_on = 0
-            }
-            cfgFuncCode_gqePart += "    t.set_bit(2, " + dual_key_join_on + ");    // dual-key"
-            cfgFuncCode_gqePart += "    t.range(5, 3) = 0;  // hash join flag = 0 for normal, 1 for semi, 2 for anti"
-            cfgFuncCode_gqePart += ""
-            cfgFuncCode_gqePart += "    b[0] = t;"
-            cfgFuncCode_gqePart += "}"
-            //gqeAggr configuration bits
-            cfgFuncCode += "    ap_int<64> shuffle3_cfg;"
-            for (ss3 <- 0 to 8 - 1) {
-              if (ss3 < groupby_operator._groupBy_operation.length) {
-                var col_name = groupby_operator._groupBy_operation(ss3)
-                var col_idx = col_idx_dict_prev(col_name)
-                cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = " + col_idx.toString + ";" + " // " + col_name
-              } else {
-                cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = -1;"
-              }
-            }
-            cfgFuncCode += "    config[71] = shuffle3_cfg(31, 0);"
-            cfgFuncCode += "    config[72] = shuffle3_cfg(63, 32);"
-            cfgFuncCode += ""
-            // input pld col assignment
-            cfgFuncCode += "    ap_int<64> shuffle4_cfg;"
-            var tmp_col_idx = 0
-            for (o_col <- groupby_operator._outputCols) {
-              if (!groupby_operator._groupBy_operation.contains(o_col)) { // pld cols
-                var prev_col_idx = col_idx_dict_prev(o_col)
-                cfgFuncCode += "    shuffle4_cfg(" + ((tmp_col_idx + 1) * 8 - 1).toString + ", " + (tmp_col_idx * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + o_col
-                tmp_col_idx += 1
-              }
-            }
-            for (ss4 <- tmp_col_idx to 8 - 1) { // unused cols
-              cfgFuncCode += "    shuffle4_cfg(" + ((ss4 + 1) * 8 - 1).toString + ", " + (ss4 * 8).toString + ") = -1;"
-            }
-            cfgFuncCode += "    config[73] = shuffle4_cfg(31, 0);"
-            cfgFuncCode += "    config[74] = shuffle4_cfg(63, 32);"
-            cfgFuncCode += ""
-
-          } else {
-            cfgFuncCode += "    ap_int<64> shuffle3_cfg;"
-            for (ss3 <- 0 to 8 - 1) {
-              if (ss3 < groupby_operator._groupBy_operation.length) {
-                var col_name = groupby_operator._groupBy_operation(ss3)
-                var col_idx = col_idx_dict_prev(col_name)
-                cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = " + col_idx.toString + ";" + " // " + col_name
-              } else {
-                cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = -1;"
-              }
-            }
-            cfgFuncCode += "    config[71] = shuffle3_cfg(31, 0);"
-            cfgFuncCode += "    config[72] = shuffle3_cfg(63, 32);"
-            cfgFuncCode += ""
-            // input pld col assignment
-            cfgFuncCode += "    ap_int<64> shuffle4_cfg;"
-            var tmp_col_idx = 0
-            for (o_col <- groupby_operator._outputCols) {
-              if (!groupby_operator._groupBy_operation.contains(o_col)) { // pld cols
-                var prev_col_idx = col_idx_dict_prev(o_col)
-                cfgFuncCode += "    shuffle4_cfg(" + ((tmp_col_idx + 1) * 8 - 1).toString + ", " + (tmp_col_idx * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + o_col
-                tmp_col_idx += 1
-              }
-            }
-            for (ss4 <- tmp_col_idx to 8 - 1) { // unused cols
-              cfgFuncCode += "    shuffle4_cfg(" + ((ss4 + 1) * 8 - 1).toString + ", " + (ss4 * 8).toString + ") = -1;"
-            }
-            cfgFuncCode += "    config[73] = shuffle4_cfg(31, 0);"
-            cfgFuncCode += "    config[74] = shuffle4_cfg(63, 32);"
-            cfgFuncCode += ""
-          }
-          // aggr_op assignment on pld cols
-          cfgFuncCode += "    ap_uint<4> aggr_op[8] = {0, 0, 0, 0, 0, 0, 0, 0};"
-          for (aggr_idx <- 0 to 8 - 1) {
-            if (aggr_idx < groupby_operator._aggregate_expression.length) {
-              var tmp_aggr_expr = groupby_operator._aggregate_expression(aggr_idx)
-              if (isPureEvalOperation_sub(tmp_aggr_expr)) { // no aggrgation: TODO: is this possible?
-                cfgFuncCode += "    aggr_op["+ aggr_idx.toString +"] = xf::database::enums::AOP_SUM;"
-              } else {
-                // grab aggr_op from _aggregate_expression[aggr_idx]
-                var aggr_op_enum = getAggregateOpEnum(tmp_aggr_expr)
-                cfgFuncCode += "    aggr_op["+ aggr_idx.toString +"] = " + aggr_op_enum + ";"
-              }
-            }
-            else {
-              cfgFuncCode += "    aggr_op["+ aggr_idx.toString +"] = xf::database::enums::AOP_SUM;"
-            }
-          }
-          cfgFuncCode += "    config[75] = (aggr_op[7], aggr_op[6], aggr_op[5], aggr_op[4], aggr_op[3], aggr_op[2], aggr_op[1], aggr_op[0]);"
-          cfgFuncCode += ""
-          // # of col types
-          var num_keys = groupby_operator._groupBy_operation.length
-          var num_plds = groupby_operator._aggregate_operation.length
-          cfgFuncCode += "    config[76] = " + (num_keys).toString + "; //# key col"
-          cfgFuncCode += "    config[77] = " + (num_plds).toString + "; //# pld col"
-          cfgFuncCode += "    config[78] = 0; //# aggr num"
-          cfgFuncCode += ""
-          // column merge selection
-          cfgFuncCode += "    ap_uint<8> merge[5];"
-          // merge selection
-          var key_col_selection = "0b"
-          var pld_col_selection = "0b"
-          for (merg_col <- 0 to 8-1) {
-            if (merg_col < num_keys) {
-              key_col_selection += "1"
-            } else {
-              key_col_selection += "0"
-            }
-            var pld_idx = 8-merg_col
-            var pld_aggr_enum = "xf::database::enums::AOP_SUM"
-            if (pld_idx <= num_plds) {
-              pld_aggr_enum = getAggregateOpEnum(groupby_operator._aggregate_expression(pld_idx-1))
-            }
-            if ((merg_col < num_keys) || (pld_idx <= num_plds && pld_aggr_enum != "xf::database::enums::AOP_SUM" && pld_aggr_enum != "xf::database::enums::AOP_MEAN")) {
-              pld_col_selection += "1"
-            } else {
-              pld_col_selection += "0"
-            }
-          }
-          cfgFuncCode += "    merge[0] = " + key_col_selection + ";"
-          cfgFuncCode += "    merge[1] = 0;"
-          cfgFuncCode += "    merge[2] = 0;"
-          cfgFuncCode += "    merge[3] = " + pld_col_selection + ";"
-          cfgFuncCode += "    merge[4] = 0;"
-          var key_pld_reverse = 1
-          var merged_col_reverse = 0
-          cfgFuncCode += "    config[79] = (" + key_pld_reverse + ", merge[2], merge[1], merge[0]);"
-          cfgFuncCode += "    config[80] = (" + merged_col_reverse + ", merge[4], merge[3]);"
-
-          //aggr - Alec-added
-          cfgFuncCode += ""
-          cfgFuncCode += "    // aggr - demux mux direct_aggr"
-          var nonGroupbyAggregate_operator = getNonGroupByAggregateOperator(this)
-          if (nonGroupbyAggregate_operator != null) {
-            cfgFuncCode += "    config[81] = 1;"
-          }
-          else {
-            cfgFuncCode += "    config[81] = 0;"
-          }
-
-          //output - Alec-added
-          cfgFuncCode += ""
-          cfgFuncCode += "    // output - demux mux direct_aggr"
-          cfgFuncCode += "    config[82] = 0xffff;"
-          cfgFuncCode += "}"
-
-          for (line <- cfgFuncCode) {
-            _fpgaConfigFuncCode += line
-          }
-          if (sf == 30) {
-            for (line <- cfgFuncCode_gqePart) {
-              _fpgaConfigFuncCode += line
-            }
-          }
-          var sw_aggr_consolidate_func_cal = "void " + "SW_" + nodeOpName + "_consolidate("
-          if (sf == 30) {
-            sw_aggr_consolidate_func_cal += "Table *" + _fpgaOutputTableName + ", "
-            sw_aggr_consolidate_func_cal += "Table &" + _fpgaOutputTableName.stripSuffix("_preprocess") + ", "
-            sw_aggr_consolidate_func_cal += "int hpTimes"
-          } else {
-            sw_aggr_consolidate_func_cal += "Table &" + _fpgaOutputTableName + ", "
-            sw_aggr_consolidate_func_cal += "Table &" + _fpgaOutputTableName.stripSuffix("_preprocess")
-          }
-
-          sw_aggr_consolidate_func_cal += ") {"
-          aggrConsolidateFuncCode += sw_aggr_consolidate_func_cal
-          aggrConsolidateFuncCode += "    int nrow = 0;"
-          var tbl_partition_suffix = ""
-          if (sf == 30) {
-            aggrConsolidateFuncCode += "for (int p_idx = 0; p_idx < hpTimes; p_idx++) {"
-            tbl_partition_suffix = "[p_idx]"
-          }
-          aggrConsolidateFuncCode += "    int nrow_p = " + _fpgaOutputTableName + tbl_partition_suffix + ".getNumRow();"
-          aggrConsolidateFuncCode += "    for (int r(0); r<nrow_p; ++r) {"
-          var col_idx = 0
-          for (o_col <- groupby_operator._outputCols) {
-            var output_col_type = getColumnType(o_col, dfmap)
-            // TODO: read from input table into tmp data
-            var key_idx = (8-1) - groupby_operator._groupBy_operation.indexOf(o_col) // key cols are stored in a reverse order
-            var pld_low_idx = 0
-            var pld_high_idx = 0
-            for (aggr_op <- groupby_operator._aggregate_operation) {
-              if (aggr_op.split(" AS ").last == o_col) {
-                var this_pld_idx = groupby_operator._aggregate_operation.indexOf(aggr_op)
-                pld_low_idx = this_pld_idx // AOP::SUM[31:0] stored at 0th
-                pld_high_idx = 8 + this_pld_idx // AOP::SUM[63:32] stored at 8th
-              }
-            }
-            if (groupby_operator._groupBy_operation.contains(o_col)) { // key col
-              aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + key_idx.toString + ");"
-              aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
-            }
-            else { // payload col
-              var pld_aggr_enum = getAggregateOpEnum(groupby_operator._aggregate_expression(pld_low_idx))
-              if (pld_aggr_enum == "xf::database::enums::AOP_SUM" || pld_aggr_enum == "xf::database::enums::AOP_MEAN") {
-                if (output_col_type == "IntegerType") {
-                  aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + pld_low_idx.toString + ");"
-                  aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
-                }
-                else if (output_col_type == "LongType") {
-                  aggrConsolidateFuncCode += "        int64_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".combineInt64(r, " + pld_high_idx.toString + ", " + pld_low_idx.toString + ");"
-                  aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt64(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
-                }
-                else if (output_col_type == "DoubleType") {
-                  aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + pld_low_idx.toString + ");"
-                  aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
-                }
-                else {
-                  aggrConsolidateFuncCode += "        // Error: unsupported data type - revisit cpu/fpga determination logic - " + output_col_type.toString + " - default to IntegerType"
-                  aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + pld_low_idx.toString + ");"
-                  aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
-                }
-              }
-              else { // MIN, MAX, COUNT, COUNTNONZERO
-                aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + pld_low_idx.toString + ");"
-                aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
-              }
-            }
-            col_idx += 1
-          }
-          aggrConsolidateFuncCode += "    }"
-          aggrConsolidateFuncCode += "    nrow += nrow_p;"
-          if (sf == 30) {
-            aggrConsolidateFuncCode += "}"
-          }
-          aggrConsolidateFuncCode += "    " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setNumRow(nrow);"
-          aggrConsolidateFuncCode += "    std::cout << \"" + _fpgaOutputTableName.stripSuffix("_preprocess") + " #Row: \" << " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".getNumRow() << std::endl;"
-          aggrConsolidateFuncCode += "}"
-
-          for (line <- aggrConsolidateFuncCode) {
-            _fpgaSWFuncCode += line
-          }
-
-          // TODO: Set up Xilinx L2 module kernels in host code
-          var kernel_name = ""
-          var partition_kernel_name = ""
-          if (sf == 30) {
-            // if (innerMostOperator._children.head._cpuORfpga == 0 || innerMostOperator._children.head._nodeType == "SerializeFromObject") {
-            // }
-            partition_kernel_name = "krnl_" + nodeOpName + "_part"
-            _fpgaKernelSetupCode += "AggrKrnlEngine " + partition_kernel_name + ";"
-            _fpgaKernelSetupCode += partition_kernel_name + " = AggrKrnlEngine(program_a, q_a, \"gqePart\");"
-            _fpgaKernelSetupCode += partition_kernel_name + ".setup_hp(512, 0, power_of_hpTimes_aggr, " + input_table_name + ", " + input_table_name + "_partition" + ", " + nodeCfgCmd_part +");"
-
-            kernel_name = "krnl_" + nodeOpName
-            _fpgaKernelSetupCode += "AggrKrnlEngine " + kernel_name + "[hpTimes_aggr];"
-            _fpgaKernelSetupCode += "for (int i = 0; i < hpTimes_aggr; i++) {"
-            _fpgaKernelSetupCode += "    " + kernel_name + "[i] = AggrKrnlEngine(program_a, q_a, \"gqeAggr\");"
-            _fpgaKernelSetupCode += "}"
-            _fpgaKernelSetupCode += "for (int i = 0; i < hpTimes_aggr; i++) {"
-            _fpgaKernelSetupCode += "    " + kernel_name + "[i].setup(" + input_table_name + "_partition_array[i], " + _fpgaOutputTableName.stripSuffix("_preprocess") + "_partition_array" + "[i], " + nodeCfgCmd + ", " + nodeCfgCmd_out + ", buftmp_a);"
-            _fpgaKernelSetupCode += "}"
-          }
-          else {
-            kernel_name = "krnl_" + nodeOpName
-            _fpgaKernelSetupCode += "AggrKrnlEngine " + kernel_name + ";"
-            _fpgaKernelSetupCode += kernel_name + " = AggrKrnlEngine(program_a, q_a, \"gqeAggr\");"
-            _fpgaKernelSetupCode += kernel_name + ".setup(" + _children.head.fpgaOutputTableName + ", " + _fpgaOutputTableName + ", " + nodeCfgCmd + ", " + nodeCfgCmd_out + ", buftmp_a);"
-          }
-          // TODO: Set up transfer engine in host code
-          _fpgaTransEngineName = "trans_" + nodeOpName
-          _fpgaTransEngineSetupCode += "transEngine " + _fpgaTransEngineName + ";"
-          _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".setq(q_a);"
-          if (sf == 30) {
-            _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + nodeCfgCmd_part + "));"
-          }
-          _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + nodeCfgCmd + "));"
-          for (ch <- _children) {
-            if (ch.operation.isEmpty) {
-              _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + ch._fpgaOutputTableName + "));"
-            }
-          }
-          // TODO: Set up transfer engine output
-          var fpgaTransEngineOutputName = "trans_" + nodeOpName + "_out"
-          // if ((parentNode == null) || ((parentNode != null) && ((parentNode.cpuORfpga == 1 && parentNode.fpgaOverlayType != this._fpgaOverlayType) || (parentNode.cpuORfpga == 0)))) {
-          _fpgaTransEngineSetupCode += "transEngine " + fpgaTransEngineOutputName + ";"
-          _fpgaTransEngineSetupCode += fpgaTransEngineOutputName + ".setq(q_a);"
-          _fpgaTransEngineSetupCode += "q_a.finish();"
-          // TODO: Set up events in host code
-          var h2d_wr_name = "events_h2d_wr_" + nodeOpName
-          var d2h_rd_name = "events_d2h_rd_" + nodeOpName
-          var events_name = "events_" + nodeOpName
-          _fpgaEventsH2DName = h2d_wr_name
-          _fpgaEventsD2HName = d2h_rd_name
-          _fpgaEventsName = events_name
-          _fpgaKernelEventsCode += "std::vector<cl::Event> " + h2d_wr_name + ";"
-          _fpgaKernelEventsCode += "std::vector<cl::Event> " + d2h_rd_name + ";"
-          if (sf == 30) {
-            _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_name + "[2];"
-          } else {
-            _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_name + ";"
-          }
-          _fpgaKernelEventsCode += h2d_wr_name + ".resize(1);"
-          _fpgaKernelEventsCode += d2h_rd_name + ".resize(1);"
-          if (sf == 30) {
-            _fpgaKernelEventsCode += events_name + "[0].resize(1);"
-            _fpgaKernelEventsCode += events_name + "[1].resize(hpTimes_aggr);"
-          } else {
-            _fpgaKernelEventsCode += events_name + ".resize(1);"
-          }
-          var events_grp_name = "events_grp_" + nodeOpName
-          _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_grp_name + ";"
-          var prev_events_grp_name = "prev_events_grp_" + nodeOpName
-          _fpgaKernelEventsCode += "std::vector<cl::Event> " + prev_events_grp_name + ";"
-          for (ch <- _children) {
-            if (ch.operation.nonEmpty && ch._cpuORfpga == 1 && this._fpgaOverlayType == ch._fpgaOverlayType) {
-              _fpgaKernelRunCode += prev_events_grp_name + ".push_back(" + ch.fpgaEventsH2DName + "[0]);"
-            }
-          }
-          // TODO: Run Xilinx L2 module kernels and link events in host code
-          for (ch <- _children) {
-            if (ch._operation.nonEmpty) {
-              _fpgaKernelRunCode += _fpgaTransEngineName + ".add(&(" + ch._fpgaOutputTableName + "));"
-            }
-          }
-          _fpgaKernelRunCode += _fpgaTransEngineName + ".host2dev(0, &(" + prev_events_grp_name + "), &(" + _fpgaEventsH2DName + "[0]));"
-          _fpgaKernelRunCode += events_grp_name + ".push_back(" + _fpgaEventsH2DName + "[0]);"
-          for (ch <- _children) {
-            if (ch.operation.nonEmpty && ch._cpuORfpga == 1 && this._fpgaOverlayType == ch._fpgaOverlayType) {
-              if (sf == 30) {
-                _fpgaKernelRunCode += events_grp_name + ".insert(std::end(" + events_grp_name + "), std::begin(" + ch.fpgaEventsName + "[0]), std::end(" + ch.fpgaEventsName + "[0]));"
-                _fpgaKernelRunCode += events_grp_name + ".insert(std::end(" + events_grp_name + "), std::begin(" + ch.fpgaEventsName + "[1]), std::end(" + ch.fpgaEventsName + "[1]));"
-              } else {
-                _fpgaKernelRunCode += events_grp_name + ".push_back(" + ch.fpgaEventsName + "[0]);"
-              }
-            }
-          }
-          if (sf == 30) {
-            _fpgaKernelRunCode += partition_kernel_name + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][0]));"
-            _fpgaKernelRunCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
-            _fpgaKernelRunCode += "    " + kernel_name + "[i].run(0, &(" + _fpgaEventsName + "[0]), &(" + _fpgaEventsName + "[1][i]));"
-            _fpgaKernelRunCode += "}"
-          } else {
-            _fpgaKernelRunCode += kernel_name + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0]));"
-          }
-          _fpgaKernelRunCode += ""
-          if (sf == 30) {
-            _fpgaKernelRunCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
-            _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName.stripSuffix("_preprocess") + "_partition_array" + "[i]));"
-            _fpgaKernelRunCode += "}"
-            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "[1]), &(" + _fpgaEventsD2HName + "[0]));"
-          } else {
-            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "));"
-            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "), &(" + _fpgaEventsD2HName + "[0]));"
-          }
-          _fpgaKernelRunCode += "q_a.flush();"
-          _fpgaKernelRunCode += "q_a.finish();"
-          _fpgaKernelRunCode += ""
-          var tmp_aggr_col_consolidate = "SW_" + nodeOpName + "_consolidate("
-          if (sf == 30) {
-            tmp_aggr_col_consolidate += _fpgaOutputTableName.stripSuffix("_preprocess")  + "_partition_array" + ", "
-          } else {
-            tmp_aggr_col_consolidate += _fpgaOutputTableName + ", "
-          }
-          _fpgaOutputTableName = _fpgaOutputTableName.stripSuffix("_preprocess")
-          if (sf == 30) {
-            tmp_aggr_col_consolidate += _fpgaOutputTableName + ", hpTimes_aggr);"
-          } else {
-            tmp_aggr_col_consolidate += _fpgaOutputTableName + ");"
-          }
-          _fpgaKernelRunCode += tmp_aggr_col_consolidate
+          genFPGAAggOverlayCode(parentNode, dfmap, nodeOpName, sf, queryNum)
         }
         else if (_fpgaOverlayType == 2) { // gqe_join-0, gqe_aggr-1, gqe_part-2
           var nodeCfgCmd = "cfg_" + nodeOpName + "_cmds"
@@ -8398,12 +6194,12 @@ class SQL2FPGA_QPlan {
             if (ch._cpuORfpga == 1 && ch._nodeType != "SerializeFromObject") {
               contains_partitioned_tbl = true
               overlay_type = ch._fpgaOverlayType
-              if (overlay_type == 1) {
+              if (overlay_type == 1) { //aggr
                 swFuncCall += ch.fpgaOutputTableName + ", "
-              } else {
+              } else { //join
                 swFuncCall += ch.fpgaOutputTableName + "_partition_array, "
               }
-            } else {
+            } else { // non table reading node on fpga
               swFuncCall += ch.fpgaOutputTableName + ", "
             }
           } else {
@@ -10325,11 +8121,2527 @@ class SQL2FPGA_QPlan {
     }
   }
 
-  def printKernelConfigCode: Unit ={
+  def genCodeOutputTableAndColumn(parentNode: SQL2FPGA_QPlan, dfmap: Map[String, DataFrame], sf: Int): Unit = {
+    //-----------------------------------OUTPUT TABLE & COLUMN----------------------------------------
+    if (_outputCols.nonEmpty) {
+      if (_operation.isEmpty) {
+        // This assumes the node is "SerializeFromObject", so outputCol equals inputCol
+        _fpgaOutputTableName = _fpgaInputTableName
+        _fpgaOutputTableName_stringRowIDSubstitute = _fpgaInputTableName_stringRowIDSubstitute
+        _fpgaOutputCode = _fpgaInputCode
+        _fpgaOutputDevAllocateCode = _fpgaInputDevAllocateCode
+      }
+      else {
+        for (col <- _outputCols) {
+          if (columnDictionary.contains(col) == false) {
+            // TODO: Add updated expression
+            columnDictionary += (col -> (_fpgaNodeName, null))
+          }
+        }
+        var outputTblCol = new ListBuffer[String]()
+        var max_num_rows = 6100000 * sf
+        var tbl_name_fpga_table = "tbl_" + _fpgaNodeName + "_output" + "_preprocess"
+        var tbl_name = "tbl_" + _fpgaNodeName + "_output"
+
+        if (_cpuORfpga == 1) {
+          max_num_rows = _numTableRow
+        }
+
+        var intermediate_num_cols = 0
+        var part_tbl_name = ""
+        var part_tbl_array_name = ""
+        if (_cpuORfpga == 1 && _fpgaOverlayType == 0) { // gqe-join
+          // parent node is gqe-agg
+          if (parentNode != null && parentNode.cpuORfpga == 1 && parentNode._fpgaOverlayType == 1) {
+            _fpgaOutputTableName = tbl_name_fpga_table // table name with preprocess prefix
+            intermediate_num_cols = _outputCols.length
+            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+            outputTblCol += _fpgaOutputTableName + ".allocateHost();"
+            _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 32);"
+            // duplicate table for aggr overlay
+            outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+            outputTblCol += tbl_name + ".allocateHost();"
+            parentNode._fpgaOutputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 32);"
+          }
+          else {
+            _fpgaOutputTableName = tbl_name
+            intermediate_num_cols = _outputCols.length
+            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+            if (sf == 30) {
+              outputTblCol += _fpgaOutputTableName + ".allocateHost(1.2, hpTimes_join);"
+              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 32);"
+              part_tbl_array_name = tbl_name + "_partition_array"
+              _fpgaOutputDevAllocateCode += "Table " + part_tbl_array_name + "[hpTimes_join];"
+              _fpgaOutputDevAllocateCode += "for (int i(0); i < hpTimes_join; ++i) {"
+              _fpgaOutputDevAllocateCode += "    " + part_tbl_array_name + "[i] = " + _fpgaOutputTableName + ".createSubTable(i);"
+              _fpgaOutputDevAllocateCode += "}"
+            } else {
+              outputTblCol += _fpgaOutputTableName + ".allocateHost();"
+              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 32);"
+            }
+          }
+        }
+        else if (_cpuORfpga == 1 && _fpgaOverlayType == 1) { // gqe-aggr
+          if (parentNode != null && parentNode.cpuORfpga == 1 && parentNode._fpgaOverlayType == 0) {
+            _fpgaOutputTableName = tbl_name_fpga_table
+            intermediate_num_cols = 16 // gqe-outputs a 16-col tbl
+            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+            outputTblCol += _fpgaOutputTableName + ".allocateHost();"
+            _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
+            // add another output table, to shrink and shuffle 16-col table to an 8-col table, when using the gqe-aggr overlay
+            outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + _outputCols.length + ", \"\");"
+            outputTblCol += tbl_name + ".allocateHost();"
+            _fpgaOutputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 32);"
+          }
+          else if (parentNode != null && parentNode.cpuORfpga == 1 && parentNode._fpgaOverlayType == 1) {
+            _fpgaOutputTableName = tbl_name_fpga_table
+            intermediate_num_cols = 16 // gqe-outputs a 16-col tbl
+            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+            outputTblCol += _fpgaOutputTableName + ".allocateHost();"
+            _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
+            // add another output table, to shrink and shuffle 16-col table to an 8-col table, when using the gqe-aggr overlay
+            outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + _outputCols.length + ", \"\");"
+            outputTblCol += tbl_name + ".allocateHost();"
+            _fpgaOutputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 32);"
+          }
+          else {
+            _fpgaOutputTableName = tbl_name_fpga_table
+            intermediate_num_cols = 16 // gqe-outputs a 16-col tbl
+            outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+            if (sf == 30) {
+              outputTblCol += _fpgaOutputTableName + ".allocateHost(1.2, hpTimes_aggr);"
+              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
+              part_tbl_array_name = tbl_name + "_partition_array"
+              _fpgaOutputDevAllocateCode += "Table " + part_tbl_array_name + "[hpTimes_aggr];"
+              _fpgaOutputDevAllocateCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
+              _fpgaOutputDevAllocateCode += "    " + part_tbl_array_name + "[i] = " + _fpgaOutputTableName + ".createSubTable(i);"
+              _fpgaOutputDevAllocateCode += "}"
+              // add another output table, to shrink and shuffle 16-col table to an 8-col table, when using the gqe-aggr overlay
+              outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + _outputCols.length + ", \"\");"
+            } else {
+              outputTblCol += _fpgaOutputTableName + ".allocateHost();"
+              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
+              // add another output table, to shrink and shuffle 16-col table to an 8-col table, when using the gqe-aggr overlay
+              outputTblCol += "Table " + tbl_name + "(\"" + tbl_name + "\", " + max_num_rows + ", " + _outputCols.length + ", \"\");"
+              outputTblCol += tbl_name + ".allocateHost();"
+            }
+          }
+        }
+        // current node is on cpu and parent node is on FPGA
+        else if (parentNode != null && parentNode.cpuORfpga == 1) {
+          _fpgaOutputTableName = tbl_name
+          intermediate_num_cols = _outputCols.length
+          outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+          outputTblCol += _fpgaOutputTableName + ".allocateHost();"
+          // parent is join
+          if (parentNode._fpgaOverlayType == 0) {
+            if (sf == 30) {
+              part_tbl_name = tbl_name + "_partition"
+              part_tbl_array_name = tbl_name + "_partition_array"
+              outputTblCol += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+              outputTblCol += part_tbl_name + ".allocateHost(1.2, hpTimes_join);"
+              outputTblCol += part_tbl_name + ".allocateDevBuffer(context_h, 32);"
+              outputTblCol += "Table " + part_tbl_array_name + "[hpTimes_join];"
+              outputTblCol += "for (int i(0); i < hpTimes_join; ++i) {"
+              outputTblCol += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
+              outputTblCol += "}"
+              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 33);"
+            } else {
+              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_h, 32);"
+            }
+          }
+          // parent is aggr
+          else if (parentNode._fpgaOverlayType == 1) {
+            if (sf == 30) {
+              part_tbl_name = tbl_name + "_partition"
+              part_tbl_array_name = tbl_name + "_partition_array"
+              outputTblCol += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+              outputTblCol += part_tbl_name + ".allocateHost(1.2, hpTimes_aggr);"
+              outputTblCol += part_tbl_name + ".allocateDevBuffer(context_a, 32);"
+              outputTblCol += "Table " + part_tbl_array_name + "[hpTimes_aggr];"
+              outputTblCol += "for (int i(0); i < hpTimes_aggr; ++i) {"
+              outputTblCol += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
+              outputTblCol += "}"
+              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 33);"
+            } else {
+              _fpgaOutputDevAllocateCode += _fpgaOutputTableName + ".allocateDevBuffer(context_a, 32);"
+            }
+          }
+        }
+        else {
+          _fpgaOutputTableName = tbl_name
+          intermediate_num_cols = _outputCols.length
+          outputTblCol += "Table " + _fpgaOutputTableName + "(\"" + _fpgaOutputTableName + "\", " + max_num_rows + ", " + intermediate_num_cols + ", \"\");"
+          outputTblCol += _fpgaOutputTableName + ".allocateHost();"
+        }
+
+        _fpgaOutputCode ++= outputTblCol
+        _fpgaCode ++= outputTblCol
+      }
+    }
+  }
+
+  def genCodeInputTableAndColumn(parentNode: SQL2FPGA_QPlan, dfmap: Map[String, DataFrame], sf: Int, nodeOpName: String): Unit = {
+
+    if (_children.isEmpty) {
+      // This assumes the node is "SerializeFromObject"
+      // read _inputCols.length number of columns
+      // from a single table which can be looked up using "columnDictionary"
+      var inputTblCode = new ListBuffer[String]()
+
+      //TODO: fix input table gen after prun away invalid stringRowIDSubstitution table
+      //tag:table_gen
+      if (_stringRowIDSubstitution == true) {
+        //Substitute table - table with row_id
+        var tbl_name = "tbl_" + nodeOpName + "_input" + "_stringRowIDSubstitute"
+        _fpgaInputTableName = tbl_name
+        var tbl = columnDictionary(_inputCols.head)._1
+        var num_cols = _inputCols.length
+
+        // Table tbl_SerializeFromObject_TD_6605_input;
+        // tbl_SerializeFromObject_TD_6605_input = Table("partsupp", partsupp_n, 3, in_dir);
+        // tbl_SerializeFromObject_TD_6605_input.addCol("ps_partkey", 4);
+
+        inputTblCode += "Table " + tbl_name + ";"
+        inputTblCode += tbl_name + " = Table(\"" + tbl + "\", " + tbl + "_n, " + num_cols + ", in_dir);"
+        for (col_name <- _inputCols) {
+          var col = columnDictionary(col_name)._2
+          var col_type = getColumnDataType(dfmap(tbl), col)
+          var col_type_text = "4"
+          if (col_type == "StringType") {
+            inputTblCode += tbl_name + ".addCol(\"" + col + "\", 4, 1, 0);"
+          }
+          else {
+            inputTblCode += tbl_name + ".addCol(\"" + col + "\", 4);"
+          }
+        }
+        inputTblCode += tbl_name + ".allocateHost();"
+        inputTblCode += tbl_name + ".loadHost();"
+        //Substitute table - original table with string
+        if (_cpuORfpga == 1) {
+          // join
+          if (parentNode._cpuORfpga == 1 && parentNode._fpgaOverlayType == 0) {
+            if (sf == 30) {
+              //
+              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 33);"
+              var part_tbl_name = tbl_name + "_partition"
+              var part_tbl_array_name = tbl_name + "_partition_array"
+              inputTblCode += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + tbl + "_n, " + num_cols + ", \"\");"
+              inputTblCode += part_tbl_name + ".allocateHost(1.2, hpTimes_join);"
+              inputTblCode += part_tbl_name + ".allocateDevBuffer(context_h, 32);"
+              inputTblCode += "Table " + part_tbl_array_name + "[hpTimes_join];"
+              inputTblCode += "for (int i(0); i < hpTimes_join; ++i) {"
+              inputTblCode += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
+              inputTblCode += "}"
+            } else {
+              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 32);"
+            }
+          }
+          // Agg
+          else if (parentNode._cpuORfpga == 1 && parentNode._fpgaOverlayType == 1) {
+            if (sf == 30) {
+              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 33);"
+              var part_tbl_name = tbl_name + "_partition"
+              var part_tbl_array_name = tbl_name + "_partition_array"
+              inputTblCode += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + tbl + "_n, " + num_cols + ", \"\");"
+              inputTblCode += part_tbl_name + ".allocateHost(1.2, hpTimes_aggr);"
+              inputTblCode += part_tbl_name + ".allocateDevBuffer(context_a, 32);"
+              inputTblCode += "Table " + part_tbl_array_name + "[hpTimes_aggr];"
+              inputTblCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
+              inputTblCode += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
+              inputTblCode += "}"
+            } else {
+              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 32);"
+            }
+          }
+        }
+        //Substitute table - original table with string
+        tbl_name = "tbl_" + nodeOpName + "_input"
+        _fpgaInputTableName_stringRowIDSubstitute = tbl_name
+        tbl = columnDictionary(_inputCols.head)._1
+        num_cols = _inputCols.length
+        inputTblCode += "Table " + tbl_name + ";"
+        inputTblCode += tbl_name + " = Table(\"" + tbl + "\", " + tbl + "_n, " + num_cols + ", in_dir);"
+        for (col_name <- _inputCols) {
+          var col = columnDictionary(col_name)._2
+          var col_type = getColumnDataType(dfmap(tbl), col)
+          var col_type_text = "4"
+          if (col_type == "StringType") {
+            var tbl_col = (tbl, col)
+            col_type_text = getStringLengthMacro(tbl_col) + "+1"
+          }
+          inputTblCode += tbl_name + ".addCol(\"" + col + "\", " + col_type_text + ");"
+        }
+        inputTblCode += tbl_name + ".allocateHost();"
+        inputTblCode += tbl_name + ".loadHost();"
+      }
+      else {
+        var tbl_name = "tbl_" + nodeOpName + "_input"
+        _fpgaInputTableName = tbl_name
+        var tbl = columnDictionary(_inputCols.head)._1
+        var num_cols = _inputCols.length
+        inputTblCode += "Table " + tbl_name + ";"
+        inputTblCode += tbl_name + " = Table(\"" + tbl + "\", " + tbl + "_n, " + num_cols + ", in_dir);"
+        for (col_name <- _inputCols) {
+          var col = columnDictionary(col_name)._2
+          var col_type = getColumnDataType(dfmap(tbl), col)
+          var col_type_text = "4"
+          if (col_type == "StringType") {
+            var tbl_col = (tbl, col)
+            col_type_text = getStringLengthMacro(tbl_col) + "+1"
+          }
+          inputTblCode += tbl_name + ".addCol(\"" + col + "\", " + col_type_text + ");"
+        }
+        inputTblCode += tbl_name + ".allocateHost();"
+        inputTblCode += tbl_name + ".loadHost();"
+
+        if (_cpuORfpga == 1) {
+          if (parentNode._cpuORfpga == 1 && parentNode._fpgaOverlayType == 0) {
+            if (sf == 30) {
+              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 33);"
+              var part_tbl_name = tbl_name + "_partition"
+              var part_tbl_array_name = tbl_name + "_partition_array"
+              inputTblCode += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + tbl + "_n, " + num_cols + ", \"\");"
+              inputTblCode += part_tbl_name + ".allocateHost(1.2, hpTimes_join);"
+              inputTblCode += part_tbl_name + ".allocateDevBuffer(context_h, 32);"
+              inputTblCode += "Table " + part_tbl_array_name + "[hpTimes_join];"
+              inputTblCode += "for (int i(0); i < hpTimes_join; ++i) {"
+              inputTblCode += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
+              inputTblCode += "}"
+            } else {
+              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_h, 32);"
+            }
+          }
+          else if (parentNode._cpuORfpga == 1 && parentNode._fpgaOverlayType == 1) {
+            if (sf == 30) {
+              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 33);"
+              var part_tbl_name = tbl_name + "_partition"
+              var part_tbl_array_name = tbl_name + "_partition_array"
+              inputTblCode += "Table " + part_tbl_name + "(\"" + part_tbl_name + "\", " + tbl + "_n, " + num_cols + ", \"\");"
+              inputTblCode += part_tbl_name + ".allocateHost(1.2, hpTimes_aggr);"
+              inputTblCode += part_tbl_name + ".allocateDevBuffer(context_a, 32);"
+              inputTblCode += "Table " + part_tbl_array_name + "[hpTimes_aggr];"
+              inputTblCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
+              inputTblCode += "    " + part_tbl_array_name + "[i] = " + part_tbl_name + ".createSubTable(i);"
+              inputTblCode += "}"
+            } else {
+              _fpgaInputDevAllocateCode += tbl_name + ".allocateDevBuffer(context_a, 32);"
+            }
+          }
+        }
+      }
+      _fpgaInputCode = inputTblCode
+      _fpgaCode += inputTblCode.toString()
+    }
+    else {
+      for (ch <- _children) {
+        // Get output tables from the children node(s) and use as input tables
+        _fpgaInputCode ++= ch.fpgaOutputCode
+        _fpgaInputDevAllocateCode ++= ch.fpgaOutputDevAllocateCode
+        _fpgaCode ++= ch.fpgaOutputCode
+      }
+    }
+  }
+
+  def genFPGAJoinOverlayCode(parentNode: SQL2FPGA_QPlan, dfmap: Map[String, DataFrame], nodeOpName :String, sf : Int, queryNum: Int): Unit = {
+      var joinTblOrderSwapped = false
+      // tag:overlay0
+      var nodeCfgCmd = "cfg_" + nodeOpName + "_cmds"
+      var nodeGetCfgFuncName = "get_cfg_dat_" + nodeOpName + "_gqe_join"
+      _fpgaConfigCode += "cfgCmd " + nodeCfgCmd + ";"
+      _fpgaConfigCode += nodeCfgCmd + ".allocateHost();"
+      _fpgaConfigCode += nodeGetCfgFuncName + " (" + nodeCfgCmd + ".cmd);"
+      _fpgaConfigCode += nodeCfgCmd + ".allocateDevBuffer(context_h, 32);"
+
+      // Generate the function that generates the Xilinx L2 module configurations
+      var joinConcatenateFuncCode = new ListBuffer[String]()
+      var cfgFuncCode = new ListBuffer[String]()
+      cfgFuncCode += "void " + nodeGetCfgFuncName + "(ap_uint<512>* hbuf) {"
+      var cfgFuncCode_gqePart = new ListBuffer[String]()
+      if (sf == 30) {
+        cfgFuncCode_gqePart += "void " + nodeGetCfgFuncName + "_part" + "(ap_uint<512>* hbuf) {"
+      }
+      //    find joining terms (if there is any)
+      var join_operator = getJoinOperator(this)
+      var leftmost_operator = getLeftMostBindedOperator(this)
+      var rightmost_operator = getRightMostBindedOperator(this)
+      var join_left_table_col = leftmost_operator._children.head.outputCols
+      var join_right_table_col = rightmost_operator._children.last.outputCols
+      var join_left_table_name = leftmost_operator._children.head._fpgaOutputTableName
+      var join_right_table_name = rightmost_operator._children.last._fpgaOutputTableName
+
+      if (leftmost_operator == rightmost_operator && join_left_table_col == join_right_table_col) {
+        //non-join operators - no right table
+        join_right_table_col = new ListBuffer[String]()
+        rightmost_operator = null
+      }
+      else {
+        //join operators
+        var largerLeftTbl = false
+        if (leftmost_operator._children.head._nodeType == "SerializeFromObject" && rightmost_operator._children.last._nodeType == "SerializeFromObject") {
+          if (leftmost_operator._children.head._numTableRow > rightmost_operator._children.last._numTableRow) {
+            largerLeftTbl = true
+          }
+        }
+        //              // table order swapping based on number of rows to reduce hashmap creation size
+        //              if (join_operator._nodeType == "JOIN_INNER") {
+        //                if ((leftmost_operator._children.head._nodeType == "SerializeFromObject" && leftmost_operator._children.head._numTableRow >= 150000 && rightmost_operator._children.last._nodeType != "SerializeFromObject") ||
+        //                  (leftmost_operator._children.head._nodeType.contains("JOIN") && rightmost_operator._children.last._nodeType == "Filter") ||
+        //                  (rightmost_operator._children.last._nodeType == "SerializeFromObject" && rightmost_operator._children.last._numTableRow < 150000) ||
+        //                  largerLeftTbl) {
+        //                  var temp_operator = rightmost_operator
+        //                  rightmost_operator = leftmost_operator
+        //                  leftmost_operator = temp_operator
+        //                  join_left_table_col = leftmost_operator._children.last.outputCols
+        //                  join_right_table_col = rightmost_operator._children.head.outputCols
+        //                  join_left_table_name = leftmost_operator._children.last._fpgaOutputTableName
+        //                  join_right_table_name = rightmost_operator._children.head._fpgaOutputTableName
+        //                }
+        //              }
+
+        // Alec hack - tag:inner_join_order
+        // if ( // 632
+        if ((queryNum == 1 && (join_operator._treeDepth == 4 || join_operator._treeDepth == 3 || join_operator._treeDepth == 2) && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 2 && (join_operator._treeDepth == 5 || join_operator._treeDepth == 4) && join_operator._nodeType == "JOIN_INNER") ||
+          // (queryNum == 2 && join_operator._treeDepth == 7 && join_operator._nodeType == "JOIN_INNER") || // 297
+          // if ((queryNum == 2 && join_operator._treeDepth == 8 && join_operator._nodeType == "JOIN_INNER") || // 415
+          // if ((queryNum == 2 && join_operator._treeDepth == 9 && join_operator._nodeType == "JOIN_INNER") || // 558
+          // if ((queryNum == 2 && join_operator._treeDepth == 7 && join_operator._treeDepth == 8 && join_operator._treeDepth == 9 && join_operator._nodeType == "JOIN_INNER") || //632
+          (queryNum == 3 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") || // 255, without is better => 103 ms
+          (queryNum == 5 && (join_operator._treeDepth == 2 || join_operator._treeDepth == 3 || join_operator._treeDepth == 4) && join_operator._nodeType == "JOIN_INNER") || //TPCH
+          // (queryNum == 5 && (join_operator._treeDepth == 8) && join_operator._nodeType == "JOIN_INNER") || // TPCDS
+          (queryNum == 4 && (join_operator._treeDepth == 5 || join_operator._treeDepth == 3) && join_operator._nodeType == "JOIN_INNER") || // TPCDS
+          (queryNum == 6 && (join_operator._treeDepth == 5) && join_operator._nodeType == "JOIN_INNER") || // TPCDS
+          (queryNum == 7 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 4 || join_operator._treeDepth == 6) && join_operator._nodeType == "JOIN_INNER") ||
+          // (queryNum == 7 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 4 || join_operator._treeDepth == 5 || join_operator._treeDepth == 6) && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 8 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 4 || join_operator._treeDepth == 5 || join_operator._treeDepth == 8) && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 9 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 6) && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 10 && (join_operator._treeDepth == 2 || join_operator._treeDepth == 3 || join_operator._treeDepth == 4) && join_operator._nodeType == "JOIN_INNER") ||
+          //                 (queryNum == 11 && join_operator._treeDepth == 4 && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 11 && (join_operator._treeDepth == 3 || join_operator._treeDepth == 4) && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 12 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 14 && join_operator._treeDepth == 1 && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 16 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 17 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 21 && join_operator._treeDepth == 2 && join_operator._nodeType == "JOIN_INNER") ||
+          (queryNum == 23 && join_operator._treeDepth == 0 && join_operator._nodeType == "JOIN_INNER")) {
+          joinTblOrderSwapped = true
+          var temp_operator = rightmost_operator
+          rightmost_operator = leftmost_operator
+          leftmost_operator = temp_operator
+          join_left_table_col = leftmost_operator._children.last.outputCols
+          join_right_table_col = rightmost_operator._children.head.outputCols
+          join_left_table_name = leftmost_operator._children.last._fpgaOutputTableName
+          join_right_table_name = rightmost_operator._children.head._fpgaOutputTableName
+        }
+
+        //////// Alec-added: code section below is correct //////////////////////////////
+        if (join_operator._nodeType == "JOIN_LEFTSEMI" || (join_operator._nodeType == "JOIN_LEFTANTI" && join_operator._operation.head.contains("OR isnull")) || (join_operator._nodeType == "JOIN_LEFTANTI")) {
+          joinTblOrderSwapped = true
+          var temp_operator = rightmost_operator
+          rightmost_operator = leftmost_operator
+          leftmost_operator = temp_operator
+          join_left_table_col = leftmost_operator._children.last.outputCols
+          join_right_table_col = rightmost_operator._children.head.outputCols
+          join_left_table_name = leftmost_operator._children.last._fpgaOutputTableName
+          join_right_table_name = rightmost_operator._children.head._fpgaOutputTableName
+        }
+        /////////////////////////////////////////////////////////////////////////////////
+      }
+
+      var nodeCfgCmd_part = "cfg_" + nodeOpName + "_cmds_part"
+      if (sf == 30) {
+        if ((leftmost_operator._children.last._cpuORfpga == 0 || leftmost_operator._children.last._nodeType == "SerializeFromObject") ||
+          (rightmost_operator._children.head._cpuORfpga == 0 || rightmost_operator._children.head._nodeType == "SerializeFromObject")) {
+          _fpgaConfigCode += "cfgCmd " + nodeCfgCmd_part + ";"
+          _fpgaConfigCode += nodeCfgCmd_part + ".allocateHost();"
+          _fpgaConfigCode += nodeGetCfgFuncName + "_part" + " (" + nodeCfgCmd_part + ".cmd);"
+          _fpgaConfigCode += nodeCfgCmd_part + ".allocateDevBuffer(context_h, 32);"
+        }
+      }
+
+      // ----------------------------------- Debug info -----------------------------------
+      cfgFuncCode += "    // StringRowIDSubstitution: " + _stringRowIDSubstitution + " StringRowIDBackSubstitution: " + _stringRowIDBackSubstitution
+      cfgFuncCode += "    // Supported operation: " + _nodeType
+      cfgFuncCode += "    // Operation: " + _operation
+      for (binded_overlay <- _bindedOverlayInstances) {
+        cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
+      }
+      for (binded_overlay <- _bindedOverlayInstances_left) {
+        cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
+      }
+      for (binded_overlay <- _bindedOverlayInstances_right) {
+        cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
+      }
+      cfgFuncCode += "    // Left Table: " + join_left_table_col
+      cfgFuncCode += "    // Right Table: " + join_right_table_col
+      cfgFuncCode += "    // Output Table: " + _outputCols
+      cfgFuncCode += "    // Node Depth: " + _treeDepth
+      cfgFuncCode += "    ap_uint<512>* b = hbuf;"
+      cfgFuncCode += "    memset(b, 0, sizeof(ap_uint<512>) * 9);"
+      cfgFuncCode += "    ap_uint<512> t = 0;"
+      if (sf == 30) {
+        cfgFuncCode_gqePart += "    ap_uint<512>* b = hbuf;"
+        cfgFuncCode_gqePart += "    memset(b, 0, sizeof(ap_uint<512>) * 9);"
+        cfgFuncCode_gqePart += "    ap_uint<512> t = 0;"
+        cfgFuncCode_gqePart += ""
+      }
+
+      // DRAM -> filter - input readin
+      //    A record to track how inputs cols navigates through the overlay
+      // table a
+      var a_col_idx_dict_prev = collection.mutable.Map[String, Int]()
+      var a_idx_col_dict_prev = collection.mutable.Map[Int, String]()
+      var a_tmp_idx = 0
+      for (i_col <- join_left_table_col) {
+        a_col_idx_dict_prev += (i_col -> a_tmp_idx)
+        a_idx_col_dict_prev += (a_tmp_idx -> i_col)
+        a_tmp_idx += 1
+      }
+      // table b
+      var b_col_idx_dict_prev = collection.mutable.Map[String, Int]()
+      var b_idx_col_dict_prev = collection.mutable.Map[Int, String]()
+      var b_tmp_idx = 0
+      for (i_col <- join_right_table_col) {
+        b_col_idx_dict_prev += (i_col -> b_tmp_idx)
+        b_idx_col_dict_prev += (b_tmp_idx -> i_col)
+        b_tmp_idx += 1
+      }
+
+      // filter -> join
+      cfgFuncCode += ""
+      cfgFuncCode += "    //--------------filter--------------"
+      //--------find left table filtering (if there is any)
+      var a_col_idx_dict_next = a_col_idx_dict_prev.clone()
+      var a_idx_col_dict_next = a_idx_col_dict_prev.clone()
+      var filter_a_config_call = "gen_pass_fcfg";
+      a_tmp_idx = 0
+      if (leftmost_operator != null && leftmost_operator._filtering_expression != null) {
+        // move filter operation reference cols to front of the table
+        for (ref_col <- leftmost_operator._filtering_expression.references) {
+          var prev_ref_idx = a_col_idx_dict_next(ref_col.toString)
+          var tmp_col = a_idx_col_dict_next(a_tmp_idx)
+          a_col_idx_dict_next(tmp_col) = prev_ref_idx
+          a_idx_col_dict_next(prev_ref_idx) = tmp_col
+          a_col_idx_dict_next(ref_col.toString) = a_tmp_idx
+          a_idx_col_dict_next(a_tmp_idx) = ref_col.toString
+          a_tmp_idx += 1
+        }
+        // filter config call
+        var filterCfgFuncName = "gen_fcfg_" + _fpgaNodeName + "_tbl_a"
+        filter_a_config_call = filterCfgFuncName
+        var filterConfigFuncCode = getFilterConfigFuncCode(filterCfgFuncName, leftmost_operator, a_col_idx_dict_next)
+        for (line <- filterConfigFuncCode) {
+          _fpgaConfigFuncCode += line
+        }
+      }
+      cfgFuncCode += "    // input table a"
+      var tbl_A_col_list = "signed char id_a[] = {"
+      var num_tbl_A_col = a_col_idx_dict_prev.size
+      for (a <- 0 to 8 - 1) {
+        if (a < num_tbl_A_col) { // input cols
+          // see Q4 for verification
+          var col_name = a_idx_col_dict_next(a)
+          var prev_col_idx = a_col_idx_dict_prev(col_name)
+          //                var col_name = a_idx_col_dict_prev(a)
+          //                var prev_col_idx = a_col_idx_dict_next(col_name)
+          tbl_A_col_list += prev_col_idx.toString + ","
+        }
+        else {
+          tbl_A_col_list += "-1,"
+        }
+      }
+      tbl_A_col_list = tbl_A_col_list.stripSuffix(",")
+      tbl_A_col_list += "};"
+      cfgFuncCode += "    " + tbl_A_col_list
+      cfgFuncCode += "    for (int c = 0; c < 8; ++c) {"
+      cfgFuncCode += "        t.range(56 + 8 * c + 7, 56 + 8 * c) = id_a[c];"
+      cfgFuncCode += "    }"
+      cfgFuncCode += "    // filter tbl_a config"
+      cfgFuncCode += "    uint32_t cfga[45];"
+      cfgFuncCode += "    " + filter_a_config_call + "(cfga);"
+      cfgFuncCode += "    memcpy(&b[3], cfga, sizeof(uint32_t) * 45);"
+
+      //--------find right table filtering (if there is any)
+      var b_col_idx_dict_next = b_col_idx_dict_prev.clone()
+      var b_idx_col_dict_next = b_idx_col_dict_prev.clone()
+      b_tmp_idx = 0
+      var filter_b_config_call = "gen_pass_fcfg";
+      if (rightmost_operator != null && rightmost_operator._filtering_expression != null) {
+        // TODO: move filter operation reference cols to front of the table
+        for (ref_col <- rightmost_operator._filtering_expression.references) {
+          var prev_ref_idx = b_col_idx_dict_next(ref_col.toString)
+          var tmp_col = b_idx_col_dict_next(b_tmp_idx)
+          b_col_idx_dict_next(tmp_col) = prev_ref_idx
+          b_idx_col_dict_next(prev_ref_idx) = tmp_col
+          b_col_idx_dict_next(ref_col.toString) = b_tmp_idx
+          b_idx_col_dict_next(b_tmp_idx) = ref_col.toString
+          b_tmp_idx += 1
+        }
+        // filter config call
+        var filterCfgFuncName = "gen_fcfg_" + _fpgaNodeName + "_tbl_b"
+        filter_b_config_call = filterCfgFuncName
+        var filterConfigFuncCode = getFilterConfigFuncCode(filterCfgFuncName, rightmost_operator, b_col_idx_dict_next)
+        for (line <- filterConfigFuncCode) {
+          _fpgaConfigFuncCode += line
+        }
+      }
+      cfgFuncCode += ""
+      cfgFuncCode += "    // input table b"
+      var tbl_B_col_list = "signed char id_b[] = {"
+      var num_tbl_B_col = b_col_idx_dict_prev.size
+      for (b <- 0 to 8 - 1) {
+        if (b < num_tbl_B_col) { // input cols
+          // see Q4 for verification
+          var col_name = b_idx_col_dict_next(b)
+          var prev_col_idx = b_col_idx_dict_prev(col_name)
+          //                var col_name = b_idx_col_dict_prev(b)
+          //                var prev_col_idx = b_col_idx_dict_next(col_name)
+          tbl_B_col_list += prev_col_idx.toString + ","
+        }
+        else {
+          tbl_B_col_list += "-1,"
+        }
+      }
+      tbl_B_col_list = tbl_B_col_list.stripSuffix(",")
+      tbl_B_col_list += "};"
+      cfgFuncCode += "    " + tbl_B_col_list
+      cfgFuncCode += "    for (int c = 0; c < 8; ++c) {"
+      cfgFuncCode += "        t.range(120 + 8 * c + 7, 120 + 8 * c) = id_b[c];"
+      cfgFuncCode += "    }"
+      cfgFuncCode += "    // filter tbl_b config"
+      cfgFuncCode += "    uint32_t cfgb[45];"
+      cfgFuncCode += "    " + filter_b_config_call + "(cfgb);"
+      cfgFuncCode += "    memcpy(&b[6], cfgb, sizeof(uint32_t) * 45);"
+      // update prev with next
+      a_col_idx_dict_prev = a_col_idx_dict_next.clone()
+      a_idx_col_dict_prev = a_idx_col_dict_next.clone()
+      b_col_idx_dict_prev = b_col_idx_dict_next.clone()
+      b_idx_col_dict_prev = b_idx_col_dict_next.clone()
+
+      // join -> eval
+      cfgFuncCode += ""
+      cfgFuncCode += "    //--------------join--------------"
+      var join_on = 0
+      var dual_key_join_on = 0
+      var join_flag = 0
+      var leftTableColShuffleIdx = new ListBuffer[Int]()
+      var rightTableColShuffleIdx = new ListBuffer[Int]()
+      var leftTableKeyColShuffleName = new ListBuffer[String]()
+      var rightTableKeyColShuffleName = new ListBuffer[String]()
+      var leftTablePayloadColShuffleName = new ListBuffer[String]()
+      var rightTablePayloadColShuffleName = new ListBuffer[String]()
+      if (join_operator != null) { // valid join op
+        join_on = 1
+        // join dual key
+        var join_key_pairs = getJoinKeyTerms(join_operator._joining_expression(0), false)
+        var num_join_key_pairs = join_key_pairs.length
+        if (num_join_key_pairs > 2) {
+          cfgFuncCode += "    Unsupported multi-key pairs more than two"
+          dual_key_join_on = -1
+        }
+        else if (num_join_key_pairs == 2 && !join_operator._isSpecialSemiJoin) {
+          dual_key_join_on = 1
+        }
+        else {
+          dual_key_join_on = 0
+        }
+        // join type
+        join_operator._nodeType match {
+          case "JOIN_INNER" =>
+            join_flag = 0
+          case "JOIN_LEFTSEMI" =>
+            if (join_operator._isSpecialSemiJoin) {
+              join_flag = 3
+            }
+            else {
+              join_flag = 1
+            }
+          case "JOIN_LEFTANTI" =>
+            join_flag = 2
+          case _ =>
+            join_flag = -1
+        }
+
+        // updating output_alise col with output col
+        if (leftmost_operator._outputCols_alias.nonEmpty) {
+          var this_idx = 0
+          for (o_col_alias <- leftmost_operator._outputCols) {
+            var curr_col = leftmost_operator._outputCols_alias(this_idx)
+            var curr_idx = a_col_idx_dict_prev(curr_col)
+            a_col_idx_dict_prev.remove(curr_col)
+            a_idx_col_dict_prev.remove(curr_idx)
+            a_col_idx_dict_prev += (o_col_alias -> curr_idx)
+            a_idx_col_dict_prev += (curr_idx -> o_col_alias)
+            this_idx += 1
+          }
+        }
+        if (rightmost_operator._outputCols_alias.nonEmpty) {
+          var this_idx = 0
+          for (o_col_alias <- rightmost_operator._outputCols) {
+            var curr_col = rightmost_operator._outputCols_alias(this_idx)
+            var curr_idx = b_col_idx_dict_prev(curr_col)
+            b_col_idx_dict_prev.remove(curr_col)
+            b_idx_col_dict_prev.remove(curr_idx)
+            b_col_idx_dict_prev += (o_col_alias -> curr_idx)
+            b_idx_col_dict_prev += (curr_idx -> o_col_alias)
+            this_idx += 1
+          }
+        }
+
+        // join key-payload col rearrangement
+        for (key_pair <- join_key_pairs) {
+          var leftTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" = ").head
+          var rightTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" = ").last
+          if (join_operator._isSpecialSemiJoin && key_pair.contains(" != ")) {
+            leftTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" != ").head
+            rightTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" != ").last
+          }
+          else if (join_operator._isSpecialAntiJoin && key_pair.contains(" != ")) {
+            leftTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" != ").head
+            rightTblCol = key_pair.stripPrefix("(").stripSuffix(")").trim.split(" != ").last
+          }
+
+          var needTableColSwap = false
+          if (a_col_idx_dict_prev.contains(rightTblCol) && b_col_idx_dict_prev.contains(leftTblCol)) { //no alias
+            needTableColSwap = true
+          }
+          if (needTableColSwap) {
+            var tmpTblCol = leftTblCol
+            leftTblCol = rightTblCol
+            rightTblCol = tmpTblCol
+          }
+
+          if (join_operator._isSpecialSemiJoin == true && key_pair.contains(" != ")) {
+            leftTableColShuffleIdx += a_col_idx_dict_prev(leftTblCol)
+            rightTableColShuffleIdx += b_col_idx_dict_prev(rightTblCol)
+          } else {
+            leftTableColShuffleIdx += a_col_idx_dict_prev(leftTblCol)
+            rightTableColShuffleIdx += b_col_idx_dict_prev(rightTblCol)
+            leftTableKeyColShuffleName += leftTblCol
+            rightTableKeyColShuffleName += rightTblCol
+          }
+        }
+        for (col_idx <- a_col_idx_dict_prev) {
+          var col = col_idx._1
+          var idx = col_idx._2
+          if (leftTableKeyColShuffleName.indexOf(col) == -1) {
+            leftTablePayloadColShuffleName += col
+            if (!leftTableColShuffleIdx.contains(idx)) {
+              leftTableColShuffleIdx += idx
+            }
+          }
+        }
+        for (col_idx <- b_col_idx_dict_prev) {
+          var col = col_idx._1
+          var idx = col_idx._2
+          if (rightTableKeyColShuffleName.indexOf(col) == -1) {
+            rightTablePayloadColShuffleName += col
+            if (!rightTableColShuffleIdx.contains(idx)) {
+              rightTableColShuffleIdx += idx
+            }
+          }
+        }
+      }
+      else {
+        var idx = 0
+        if (this._nodeType == "Filter") {
+          //shuffle filtering output cols here
+          var temp_col_idx_dict_prev = collection.mutable.Map[String, Int]()
+          var temp_idx_col_dict_prev = collection.mutable.Map[Int, String]()
+          for (filter_o_col <- this._outputCols) {
+            if (a_col_idx_dict_prev.contains(filter_o_col)) {
+              leftTableColShuffleIdx += a_col_idx_dict_prev(filter_o_col)
+            } else {
+              var alias_col = this._outputCols_alias(idx)
+              leftTableColShuffleIdx += a_col_idx_dict_prev(alias_col)
+            }
+            temp_col_idx_dict_prev += (filter_o_col -> idx)
+            temp_idx_col_dict_prev += (idx -> filter_o_col)
+            idx += 1
+          }
+          a_col_idx_dict_prev = temp_col_idx_dict_prev
+          a_idx_col_dict_prev = temp_idx_col_dict_prev
+        }
+        else if (this._nodeType == "Aggregate") {
+          //shuffle aggregation reference cols here
+          var temp_col_idx_dict_prev = collection.mutable.Map[String, Int]()
+          var temp_idx_col_dict_prev = collection.mutable.Map[Int, String]()
+          // no groupby operation here - gqe-join
+          for (this_aggr_expr <- this._aggregate_expression) {
+            for (aggregate_input_col <- this_aggr_expr.references) {
+              var aggr_i_col_str = aggregate_input_col.toString
+              leftTableColShuffleIdx += a_col_idx_dict_prev(aggr_i_col_str)
+              temp_col_idx_dict_prev += (aggr_i_col_str -> idx)
+              temp_idx_col_dict_prev += (idx -> aggr_i_col_str)
+              idx += 1
+            }
+          }
+          a_col_idx_dict_prev = temp_col_idx_dict_prev
+          a_idx_col_dict_prev = temp_idx_col_dict_prev
+        }
+        else {
+          for (a_col <- a_col_idx_dict_prev) {
+            leftTableColShuffleIdx += idx
+            idx += 1
+          }
+        }
+        idx = 0
+        for (b_col <- b_col_idx_dict_prev) {
+          rightTableColShuffleIdx += idx
+          idx += 1
+        }
+      }
+
+      if (sf == 30) {
+        //gqePart configuration bits
+        var filter_a_config_call = "gen_pass_fcfg";
+        cfgFuncCode_gqePart += "    // input table a"
+        var tbl_A_col_list = "signed char id_a[] = {"
+        var num_tbl_A_col = a_col_idx_dict_prev.size
+        for (a <- 0 to 8 - 1) {
+          if (a < leftTableColShuffleIdx.length) {
+            tbl_A_col_list += leftTableColShuffleIdx(a) + ","
+          }
+          else {
+            tbl_A_col_list += "-1,"
+          }
+        }
+        tbl_A_col_list = tbl_A_col_list.stripSuffix(",")
+        tbl_A_col_list += "};"
+        cfgFuncCode_gqePart += "    " + tbl_A_col_list
+        cfgFuncCode_gqePart += "    for (int c = 0; c < 8; ++c) {"
+        cfgFuncCode_gqePart += "        t.range(56 + 8 * c + 7, 56 + 8 * c) = id_a[c];"
+        cfgFuncCode_gqePart += "    }"
+        cfgFuncCode_gqePart += "    // filter tbl_a config"
+        cfgFuncCode_gqePart += "    uint32_t cfga[45];"
+        cfgFuncCode_gqePart += "    " + filter_a_config_call + "(cfga);"
+        cfgFuncCode_gqePart += "    memcpy(&b[3], cfga, sizeof(uint32_t) * 45);"
+        var filter_b_config_call = "gen_pass_fcfg";
+        cfgFuncCode_gqePart += ""
+        cfgFuncCode_gqePart += "    // input table b"
+        var tbl_B_col_list = "signed char id_b[] = {"
+        var num_tbl_B_col = b_col_idx_dict_prev.size
+        for (b <- 0 to 8 - 1) {
+          if (b < rightTableColShuffleIdx.length) {
+            tbl_B_col_list += rightTableColShuffleIdx(b) + ","
+          }
+          else {
+            tbl_B_col_list += "-1,"
+          }
+        }
+        tbl_B_col_list = tbl_B_col_list.stripSuffix(",")
+        tbl_B_col_list += "};"
+        cfgFuncCode_gqePart += "    " + tbl_B_col_list
+        cfgFuncCode_gqePart += "    for (int c = 0; c < 8; ++c) {"
+        cfgFuncCode_gqePart += "        t.range(120 + 8 * c + 7, 120 + 8 * c) = id_b[c];"
+        cfgFuncCode_gqePart += "    }"
+        cfgFuncCode_gqePart += "    // filter tbl_b config"
+        cfgFuncCode_gqePart += "    uint32_t cfgb[45];"
+        cfgFuncCode_gqePart += "    " + filter_b_config_call + "(cfgb);"
+        cfgFuncCode_gqePart += "    memcpy(&b[6], cfgb, sizeof(uint32_t) * 45);"
+        cfgFuncCode_gqePart += ""
+        cfgFuncCode_gqePart += "    // join config"
+        cfgFuncCode_gqePart += "    t.set_bit(0, " + join_on + ");    // join"
+        cfgFuncCode_gqePart += "    t.set_bit(2, " + dual_key_join_on + ");    // dual-key"
+        cfgFuncCode_gqePart += "    t.range(5, 3) = " + join_flag + ";  // hash join flag = 0 for normal, 1 for semi, 2 for anti"
+        cfgFuncCode_gqePart += ""
+        cfgFuncCode_gqePart += "    b[0] = t;"
+        cfgFuncCode_gqePart += "}"
+
+        //gqeJoin configuration bits
+        cfgFuncCode += "    //stream shuffle 1a"
+        cfgFuncCode += "    ap_int<64> shuffle1a_cfg;"
+        for (ss1a <- 0 to 8 - 1) {
+          if (ss1a < leftTableColShuffleIdx.length) {
+            cfgFuncCode += "    shuffle1a_cfg(" + ((ss1a + 1) * 8 - 1).toString + ", " + (ss1a * 8).toString + ") = " + ss1a + ";"
+          } else {
+            cfgFuncCode += "    shuffle1a_cfg(" + ((ss1a + 1) * 8 - 1).toString + ", " + (ss1a * 8).toString + ") = -1;"
+          }
+        }
+        cfgFuncCode += "\n" + "    //stream shuffle 1b"
+        cfgFuncCode += "    ap_int<64> shuffle1b_cfg;"
+        for (ss1b <- 0 to 8 - 1) {
+          if (ss1b < rightTableColShuffleIdx.length) {
+            cfgFuncCode += "    shuffle1b_cfg(" + ((ss1b + 1) * 8 - 1).toString + ", " + (ss1b * 8).toString + ") = " + ss1b + ";"
+          } else {
+            cfgFuncCode += "    shuffle1b_cfg(" + ((ss1b + 1) * 8 - 1).toString + ", " + (ss1b * 8).toString + ") = -1;"
+          }
+        }
+        cfgFuncCode += ""
+        cfgFuncCode += "    // join config"
+        cfgFuncCode += "    t.set_bit(0, " + join_on + ");    // join"
+        cfgFuncCode += "    t.set_bit(2, " + dual_key_join_on + ");    // dual-key"
+        cfgFuncCode += "    t.range(5, 3) = " + join_flag + ";  // hash join flag = 0 for normal, 1 for semi, 2 for anti"
+      }
+      else {
+        cfgFuncCode += "    //stream shuffle 1a"
+        cfgFuncCode += "    ap_int<64> shuffle1a_cfg;"
+        for (ss1a <- 0 to 8 - 1) {
+          if (ss1a < leftTableColShuffleIdx.length) {
+            cfgFuncCode += "    shuffle1a_cfg(" + ((ss1a + 1) * 8 - 1).toString + ", " + (ss1a * 8).toString + ") = " + leftTableColShuffleIdx(ss1a) + ";"
+          } else {
+            cfgFuncCode += "    shuffle1a_cfg(" + ((ss1a + 1) * 8 - 1).toString + ", " + (ss1a * 8).toString + ") = -1;"
+          }
+        }
+        cfgFuncCode += "\n" + "    //stream shuffle 1b"
+        cfgFuncCode += "    ap_int<64> shuffle1b_cfg;"
+        for (ss1b <- 0 to 8 - 1) {
+          if (ss1b < rightTableColShuffleIdx.length) {
+            cfgFuncCode += "    shuffle1b_cfg(" + ((ss1b + 1) * 8 - 1).toString + ", " + (ss1b * 8).toString + ") = " + rightTableColShuffleIdx(ss1b) + ";"
+          } else {
+            cfgFuncCode += "    shuffle1b_cfg(" + ((ss1b + 1) * 8 - 1).toString + ", " + (ss1b * 8).toString + ") = -1;"
+          }
+        }
+        cfgFuncCode += ""
+        cfgFuncCode += "    // join config"
+        cfgFuncCode += "    t.set_bit(0, " + join_on + ");    // join"
+        cfgFuncCode += "    t.set_bit(2, " + dual_key_join_on + ");    // dual-key"
+        cfgFuncCode += "    t.range(5, 3) = " + join_flag + ";  // hash join flag = 0 for normal, 1 for semi, 2 for anti"
+      }
+      var col_idx_dict_prev = collection.mutable.Map[String, Int]()
+      var idx_col_dict_prev = collection.mutable.Map[Int, String]()
+      if (join_operator != null) {
+        var join_output_cols = join_operator._outputCols
+        var outputTableColShuffleIdx = new ListBuffer[Int]()
+        var outputTableColShuffleName = new ListBuffer[String]()
+        if (join_output_cols.length > 8) {
+          cfgFuncCode += "    Unsupported number of output columns more than eight"
+        }
+        for (col <- join_output_cols) {
+          if (rightTablePayloadColShuffleName.indexOf(col) != -1) {
+            // outputTableColShuffleIdx += rightTablePayloadColShuffleName.indexOf(col)
+            col_idx_dict_prev += (col -> rightTablePayloadColShuffleName.indexOf(col))
+            idx_col_dict_prev += (rightTablePayloadColShuffleName.indexOf(col) -> col)
+            //                  col_idx_dict_prev += (col -> (b_col_idx_dict_prev(col) - 1))
+            //                  idx_col_dict_prev += ((b_col_idx_dict_prev(col) - 1) -> col)
+          }
+          else if (leftTablePayloadColShuffleName.indexOf(col) != -1) {
+            // outputTableColShuffleIdx += (leftTablePayloadColShuffleName.indexOf(col) + 6) // +6 because left table col
+            col_idx_dict_prev += (col -> (leftTablePayloadColShuffleName.indexOf(col) + 6))
+            idx_col_dict_prev += ((leftTablePayloadColShuffleName.indexOf(col) + 6) -> col)
+            //                  col_idx_dict_prev += (col -> (a_col_idx_dict_prev(col) - 1 + 6))
+            //                  idx_col_dict_prev += ((a_col_idx_dict_prev(col) - 1 + 6) -> col)
+          }
+          else if (leftTableKeyColShuffleName.indexOf(col) != -1) {
+            // outputTableColShuffleIdx += (leftTableKeyColShuffleName.indexOf(col) + 12)
+            col_idx_dict_prev += (col -> (leftTableKeyColShuffleName.indexOf(col) + 12))
+            idx_col_dict_prev += ((leftTableKeyColShuffleName.indexOf(col) + 12) -> col)
+            //                  col_idx_dict_prev += (col -> (a_col_idx_dict_prev(col) - 1 + 12))
+            //                  idx_col_dict_prev += ((a_col_idx_dict_prev(col) - 1 + 12) -> col)
+          }
+          else if (rightTableKeyColShuffleName.indexOf(col) != -1) {
+            // outputTableColShuffleIdx += (rightTableKeyColShuffleName.indexOf(col) + 12)
+            col_idx_dict_prev += (col -> (rightTableKeyColShuffleName.indexOf(col) + 12))
+            idx_col_dict_prev += ((rightTableKeyColShuffleName.indexOf(col) + 12) -> col)
+            //                  col_idx_dict_prev += (col -> (b_col_idx_dict_prev(col) - 1 + 12))
+            //                  idx_col_dict_prev += ((b_col_idx_dict_prev(col) - 1 + 12) -> col)
+          }
+        }
+      }
+      else {
+        if (a_col_idx_dict_prev.nonEmpty) {
+          col_idx_dict_prev = a_col_idx_dict_prev.clone()
+          idx_col_dict_prev = a_idx_col_dict_prev.clone()
+        }
+        else {
+          col_idx_dict_prev = b_col_idx_dict_prev.clone()
+          idx_col_dict_prev = b_idx_col_dict_prev.clone()
+        }
+      }
+
+      //eval0
+      cfgFuncCode += ""
+      cfgFuncCode += "    //--------------eval0--------------"
+      //    find eval0 terms (if there is any)
+      // Alec-hack
+      // var aggr_operator = getNonGroupByAggregateOperator(this)
+      var aggr_operator = getNonGroupByAggregateOperator(this)
+      var eval0_func = "NOP"
+      var eval0_func_call = "// eval0: NOP"
+      var col_idx_dict_next = collection.mutable.Map[String, Int]()
+      var idx_col_dict_next = collection.mutable.Map[Int, String]()
+
+      if (aggr_operator != null) {
+        if (aggr_operator._aggregate_expression.nonEmpty) {
+          var aggr_expr = aggr_operator._aggregate_expression(0) //first aggr expr
+          var start_idx = 0
+          for (this_aggr_expr <- aggr_operator._aggregate_expression) {
+            for (i_col <- this_aggr_expr.references) { // equvalent as -> for (i_col <- aggr_operator._inputCols) {
+              col_idx_dict_next += (i_col.toString -> start_idx)
+              idx_col_dict_next += (start_idx -> i_col.toString)
+              start_idx += 1
+            }
+          }
+          //move all referenced cols in aggr expr to the front
+          start_idx = 0 //first output col
+          for (ref_col <- aggr_expr.references) {
+            // place reference col and idx to 'start_idx'
+            var prev_idx = col_idx_dict_next(ref_col.toString)
+            col_idx_dict_next(ref_col.toString) = start_idx
+            var prev_col = idx_col_dict_next(start_idx)
+            idx_col_dict_next(start_idx) = ref_col.toString
+            // place the previous col and idx at new location
+            col_idx_dict_next(prev_col) = prev_idx
+            idx_col_dict_next(prev_idx) = prev_col
+            // increment on the next front idx
+            start_idx += 1
+          }
+          // eval dynamicALUCompiler function call
+          var tmp_aggr_expr = new ListBuffer[Expression]()
+          tmp_aggr_expr += aggr_expr
+          if (isPureAggrOperation(tmp_aggr_expr)) {
+            eval0_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
+            eval0_func_call = "// eval0: NOP"
+          }
+          else {
+            eval0_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
+            var aggr_const_i = new Array[Int](4) // default set as zero
+            var strm_order_i = 1
+            var (aggr_str, aggr_const, strm_order) = getAggregateExpression_ALUOPCompiler_cmd(aggr_expr, aggr_const_i, strm_order_i)
+            aggr_str = aggr_str.stripPrefix("(")
+            aggr_str = aggr_str.stripSuffix(")")
+            var ALUOPCompiler = "xf::database::dynamicALUOPCompiler<uint32_t, uint32_t, uint32_t, uint32_t>(\""
+            ALUOPCompiler += aggr_str + "\", "
+            ALUOPCompiler += aggr_const(0) + ", " + aggr_const(1) + ", " + aggr_const(2) + ", " + aggr_const(3) + ", "
+            ALUOPCompiler += "op_eval_0);"
+            eval0_func_call = ALUOPCompiler
+          }
+          if (aggr_operator._nodeType == "Project") {
+            for (o_col <- _outputCols) {
+              if (!col_idx_dict_next.contains(o_col) && col_idx_dict_prev.contains(o_col)) {
+                col_idx_dict_next += (o_col -> start_idx)
+                idx_col_dict_next += (start_idx -> o_col)
+                start_idx += 1
+              }
+            }
+          }
+          // add aliase col to col_idx and idx_col table
+          var aliase_col = aggr_expr.toString.split(" AS ").last
+          col_idx_dict_next += (aliase_col -> 8)
+          idx_col_dict_next += (8 -> aliase_col)
+        }
+        else {
+          cfgFuncCode += "    // NO aggregation operation - eval0"
+        }
+      }
+      else {
+        var start_idx = 0
+        for (o_col <- _outputCols) {
+          col_idx_dict_next += (o_col -> start_idx)
+          idx_col_dict_next += (start_idx -> o_col)
+          start_idx += 1
+        }
+      }
+
+      cfgFuncCode += "    //stream shuffle 2"
+      cfgFuncCode += "    ap_int<64> shuffle2_cfg;"
+      for (ss2 <- 0 to 8 - 1) { //max 8 cols for input table
+        //TODO: fix the line below
+        if (aggr_operator != null && ss2 < idx_col_dict_prev.size) { // input cols - yes aggr
+          var col_name = idx_col_dict_next(ss2)
+          var prev_col_idx = col_idx_dict_prev(col_name)
+          cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + col_name
+        }
+        else if (aggr_operator == null && ss2 < idx_col_dict_next.size) { // input cols - no aggr
+          var col_name = idx_col_dict_next(ss2)
+          var prev_col_idx = col_idx_dict_prev(col_name)
+          cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + col_name
+        }
+        else {
+          cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = -1;"
+        }
+      }
+      cfgFuncCode += ""
+      cfgFuncCode += "    ap_uint<289> op_eval_0 = 0;" + " // " + eval0_func
+      cfgFuncCode += "    " + eval0_func_call
+      cfgFuncCode += "    b[1] = op_eval_0;"
+      // update prev with next
+      col_idx_dict_prev = col_idx_dict_next.clone()
+      idx_col_dict_prev = idx_col_dict_next.clone()
+
+      //eval1
+      cfgFuncCode += ""
+      cfgFuncCode += "    //--------------eval1--------------"
+      var eval1_func = "NOP"
+      var eval1_func_call = "// eval1: NOP"
+
+      if (aggr_operator != null) {
+        if (aggr_operator._aggregate_expression.nonEmpty && aggr_operator._aggregate_expression.length == 2) {
+          var aggr_expr = aggr_operator._aggregate_expression(1) //second aggr expr
+          //move all referenced cols in aggr expr to the front
+          var start_idx = 0
+          for (ref_col <- aggr_expr.references) {
+            // place reference col and idx to 'start_idx'
+            var prev_idx = col_idx_dict_next(ref_col.toString)
+            col_idx_dict_next(ref_col.toString) = start_idx
+            var prev_col = idx_col_dict_next(start_idx)
+            idx_col_dict_next(start_idx) = ref_col.toString
+            // place the previous col and idx at new location
+            col_idx_dict_next(prev_col) = prev_idx
+            idx_col_dict_next(prev_idx) = prev_col
+            // increment on the next front idx
+            start_idx += 1
+          }
+
+          // move eval0 result from 8th col to append after the normal cols
+          var eval0_result_col_name = idx_col_dict_next(8)
+          col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size - 1
+          idx_col_dict_next.remove(8)
+          idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
+
+          // eval dynamicALUCompiler function call
+          var tmp_aggr_expr = new ListBuffer[Expression]()
+          tmp_aggr_expr += aggr_expr
+          if (isPureEvalOperation(tmp_aggr_expr)) {
+            eval1_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
+            eval1_func_call = ""
+          }
+          else {
+            eval1_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
+            var aggr_const_i = new Array[Int](4) // default set as zero
+            var strm_order_i = 1
+            var (aggr_str, aggr_const, strm_order) = getAggregateExpression_ALUOPCompiler_cmd(aggr_expr, aggr_const_i, strm_order_i)
+            aggr_str = aggr_str.stripPrefix("(")
+            aggr_str = aggr_str.stripSuffix(")")
+            var ALUOPCompiler = "xf::database::dynamicALUOPCompiler<uint32_t, uint32_t, uint32_t, uint32_t>(\""
+            ALUOPCompiler += aggr_str + "\", "
+            ALUOPCompiler += aggr_const(0) + ", " + aggr_const(1) + ", " + aggr_const(2) + ", " + aggr_const(3) + ", "
+            ALUOPCompiler += "op_eval_1);"
+            eval1_func_call = ALUOPCompiler
+          }
+
+          // add aliase col to col_idx and idx_col table
+          var aliase_col = aggr_expr.toString.split(" AS ").last
+          col_idx_dict_next += (aliase_col -> 8)
+          idx_col_dict_next += (8 -> aliase_col)
+        }
+        else {
+          cfgFuncCode += "    // NO aggregation operation - eval1"
+
+          // if eval0 != null, move eval0 result from 8th col to append after the normal cols
+          if (idx_col_dict_next.contains(8)) {
+            var eval0_result_col_name = idx_col_dict_next(8)
+            col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size - 1
+            idx_col_dict_next.remove(8)
+            idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
+          }
+        }
+      }
+
+      cfgFuncCode += "    //stream shuffle 3"
+      cfgFuncCode += "    ap_int<64> shuffle3_cfg;"
+      for (ss3 <- 0 to 8 - 1) { //max 8 cols for input table
+        //TODO: fix the line below
+        if (ss3 < idx_col_dict_prev.size) { // normal cols
+          if (idx_col_dict_prev.contains(ss3)) {
+            var col_name = idx_col_dict_next(ss3)
+            var prev_col_idx = col_idx_dict_prev(col_name)
+            cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + col_name
+          } else { // eval col - always at idx 8
+            cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = " + 8 + ";" + " // " + idx_col_dict_prev(8)
+          }
+        }
+        else {
+          cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = -1;"
+        }
+      }
+      cfgFuncCode += ""
+      cfgFuncCode += "    ap_uint<289> op_eval_1 = 0;" + " // " + eval1_func
+      cfgFuncCode += "    " + eval1_func_call
+      cfgFuncCode += "    b[2] = op_eval_1;"
+      // update prev with next
+      col_idx_dict_prev = col_idx_dict_next.clone()
+      idx_col_dict_prev = idx_col_dict_next.clone()
+
+      // aggr
+      cfgFuncCode += ""
+      cfgFuncCode += "    //--------------aggregate--------------"
+      var aggr_on = 0
+      if (aggr_operator != null) {
+        if (!isPureEvalOperation(aggr_operator._aggregate_expression)) {
+          aggr_on = 1
+        }
+      }
+      // Shuffle aggreation cols for the final write-out cols
+      var temp_col_idx_dict_next = collection.mutable.Map[String, Int]()
+      var temp_idx_col_dict_next = collection.mutable.Map[Int, String]()
+      var idx = 0
+      for (o_col <- this._outputCols) {
+        temp_col_idx_dict_next += (o_col -> idx)
+        temp_idx_col_dict_next += (idx -> o_col)
+        idx += 1
+      }
+      col_idx_dict_next = temp_col_idx_dict_next
+      idx_col_dict_next = temp_idx_col_dict_next
+
+      cfgFuncCode += "    //stream shuffle 4"
+      cfgFuncCode += "    ap_int<64> shuffle4_cfg;"
+      for (ss4 <- 0 to 8 - 1) { //max 8 cols for input table
+        if (ss4 < idx_col_dict_next.size) { // normal cols
+          var col_name = idx_col_dict_next(ss4)
+          var prev_col_idx = col_idx_dict_prev(col_name)
+          cfgFuncCode += "    shuffle4_cfg(" + ((ss4 + 1) * 8 - 1).toString + ", " + (ss4 * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + col_name
+        }
+        else {
+          cfgFuncCode += "    shuffle4_cfg(" + ((ss4 + 1) * 8 - 1).toString + ", " + (ss4 * 8).toString + ") = -1;"
+        }
+      }
+      cfgFuncCode += ""
+      cfgFuncCode += "    t.set_bit(1, " + aggr_on + "); // aggr flag"
+      // update prev with next
+      col_idx_dict_prev = col_idx_dict_next.clone()
+      idx_col_dict_prev = idx_col_dict_next.clone()
+
+      // writeout
+      cfgFuncCode += ""
+      cfgFuncCode += "    //--------------writeout--------------"
+      // TODO: output col selection
+      cfgFuncCode += "    // output table col"
+      var tbl_C_col_list = "t.range(191, 184) = {"
+      var c = 0
+      for (c <- 0 to 8 - 1) {
+        if (c < idx_col_dict_prev.size) {
+          tbl_C_col_list += pow(2, c).intValue.toString + "*1 + "
+        } else {
+          tbl_C_col_list += pow(2, c).intValue.toString + "*0 + "
+        }
+      }
+      tbl_C_col_list = tbl_C_col_list.stripSuffix(" + ")
+      tbl_C_col_list += "};"
+      cfgFuncCode += "    " + tbl_C_col_list
+      cfgFuncCode += "    b[0] = t;"
+
+      cfgFuncCode += "\n" + "    //stream shuffle assignment"
+      cfgFuncCode += "    b[0].range(255, 192) = shuffle1a_cfg;"
+      cfgFuncCode += "    b[0].range(319, 256) = shuffle1b_cfg;"
+      cfgFuncCode += "    b[0].range(383, 320) = shuffle2_cfg;"
+      cfgFuncCode += "    b[0].range(447, 384) = shuffle3_cfg;"
+      cfgFuncCode += "    b[0].range(511, 448) = shuffle4_cfg;"
+      cfgFuncCode += "}"
+      for (line <- cfgFuncCode) {
+        _fpgaConfigFuncCode += line
+      }
+      if (sf == 30) {
+        for (line <- cfgFuncCode_gqePart) {
+          _fpgaConfigFuncCode += line
+        }
+      }
+      // TODO: Set up Xilinx L2 module kernels in host code
+      // TODO: Set up Xilinx L2 module kernels
+      var kernel_name = ""
+      var kernel_name_left = ""
+      var kernel_name_right = ""
+      if (sf == 30) {
+        if (joinTblOrderSwapped == false) {
+          if (leftmost_operator._children.head._cpuORfpga == 0 || leftmost_operator._children.head._nodeType == "SerializeFromObject") {
+            kernel_name_left = "krnl_" + nodeOpName + "_part_left"
+            _fpgaKernelSetupCode += "krnlEngine " + kernel_name_left + ";"
+            _fpgaKernelSetupCode += kernel_name_left + " = krnlEngine(program_h, q_h, \"gqePart\");"
+            _fpgaKernelSetupCode += kernel_name_left + ".setup_hp(512, 0, power_of_hpTimes_join, " + join_left_table_name + ", " + join_left_table_name + "_partition" + ", " + nodeCfgCmd_part + ");"
+          }
+          if (_children.length > 1 && (rightmost_operator._children.last._cpuORfpga == 0 || rightmost_operator._children.last._nodeType == "SerializeFromObject")) {
+            kernel_name_right = "krnl_" + nodeOpName + "_part_right"
+            _fpgaKernelSetupCode += "krnlEngine " + kernel_name_right + ";"
+            _fpgaKernelSetupCode += kernel_name_right + " = krnlEngine(program_h, q_h, \"gqePart\");"
+            _fpgaKernelSetupCode += kernel_name_right + ".setup_hp(512, 1, power_of_hpTimes_join, " + join_right_table_name + ", " + join_right_table_name + "_partition" + ", " + nodeCfgCmd_part + ");"
+          }
+        } else {
+          if (leftmost_operator._children.last._cpuORfpga == 0 || leftmost_operator._children.last._nodeType == "SerializeFromObject") {
+            kernel_name_left = "krnl_" + nodeOpName + "_part_left"
+            _fpgaKernelSetupCode += "krnlEngine " + kernel_name_left + ";"
+            _fpgaKernelSetupCode += kernel_name_left + " = krnlEngine(program_h, q_h, \"gqePart\");"
+            _fpgaKernelSetupCode += kernel_name_left + ".setup_hp(512, 0, power_of_hpTimes_join, " + join_left_table_name + ", " + join_left_table_name + "_partition" + ", " + nodeCfgCmd_part + ");"
+          }
+          if (_children.length > 1 && (rightmost_operator._children.head._cpuORfpga == 0 || rightmost_operator._children.head._nodeType == "SerializeFromObject")) {
+            kernel_name_right = "krnl_" + nodeOpName + "_part_right"
+            _fpgaKernelSetupCode += "krnlEngine " + kernel_name_right + ";"
+            _fpgaKernelSetupCode += kernel_name_right + " = krnlEngine(program_h, q_h, \"gqePart\");"
+            _fpgaKernelSetupCode += kernel_name_right + ".setup_hp(512, 1, power_of_hpTimes_join, " + join_right_table_name + ", " + join_right_table_name + "_partition" + ", " + nodeCfgCmd_part + ");"
+          }
+        }
+
+        kernel_name = "krnl_" + nodeOpName
+        _fpgaKernelSetupCode += "krnlEngine " + kernel_name + "[hpTimes_join];"
+        _fpgaKernelSetupCode += "for (int i = 0; i < hpTimes_join; i++) {"
+        _fpgaKernelSetupCode += "    " + kernel_name + "[i] = krnlEngine(program_h, q_h, \"gqeJoin\");"
+        _fpgaKernelSetupCode += "}"
+        _fpgaKernelSetupCode += "for (int i = 0; i < hpTimes_join; i++) {"
+        _fpgaKernelSetupCode += "    " + kernel_name + "[i].setup(" + join_left_table_name + "_partition_array[i], " + join_right_table_name + "_partition_array[i], " + _fpgaOutputTableName + "_partition_array" + "[i], " + nodeCfgCmd + ", buftmp_h);"
+        _fpgaKernelSetupCode += "}"
+      }
+      else { //sf = 1
+        kernel_name = "krnl_" + nodeOpName
+        _fpgaKernelSetupCode += "krnlEngine " + kernel_name + ";"
+        _fpgaKernelSetupCode += kernel_name + " = krnlEngine(program_h, q_h, \"gqeJoin\");"
+        // Single child operation - use empty buffer as the right-hand table
+        if (_children.length == 1) {
+          var emptyBufferB_name = "tbl_" + nodeOpName + "_emptyBufferB"
+          _fpgaOutputCode += "Table " + emptyBufferB_name + "(\"" + emptyBufferB_name + "\", 1, 8, \"\");"
+          _fpgaOutputCode += emptyBufferB_name + ".allocateHost();"
+          _fpgaOutputDevAllocateCode += emptyBufferB_name + ".allocateDevBuffer(context_h, 32);"
+          _fpgaKernelSetupCode += kernel_name + ".setup(" + join_left_table_name + ", " + emptyBufferB_name + ", " + _fpgaOutputTableName + ", " + nodeCfgCmd + ", buftmp_h);"
+        } else {
+          _fpgaKernelSetupCode += kernel_name + ".setup(" + join_left_table_name + ", " + join_right_table_name + ", " + _fpgaOutputTableName + ", " + nodeCfgCmd + ", buftmp_h);"
+        }
+      }
+      // TODO: Set up transfer engine
+      _fpgaTransEngineName = "trans_" + nodeOpName
+      _fpgaTransEngineSetupCode += "transEngine " + _fpgaTransEngineName + ";"
+      _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".setq(q_h);"
+      if (sf == 30) {
+        if ((leftmost_operator != null && leftmost_operator._children.last._cpuORfpga == 0) ||
+          (rightmost_operator != null && rightmost_operator._children.head._cpuORfpga == 0)) {
+          _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + nodeCfgCmd_part + "));"
+        }
+      }
+      _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + nodeCfgCmd + "));"
+      for (ch <- _children) {
+        if (ch._operation.isEmpty) {
+          _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + ch._fpgaOutputTableName + "));"
+        }
+      }
+      // TODO: Set up transfer engine output
+      var fpgaTransEngineOutputName = "trans_" + nodeOpName + "_out"
+      if ((parentNode == null) || ((parentNode != null) && ((parentNode.cpuORfpga == 1 && parentNode.fpgaOverlayType != this._fpgaOverlayType) || (parentNode.cpuORfpga == 0)))) {
+        _fpgaTransEngineSetupCode += "transEngine " + fpgaTransEngineOutputName + ";"
+        _fpgaTransEngineSetupCode += fpgaTransEngineOutputName + ".setq(q_h);"
+      }
+      _fpgaTransEngineSetupCode += "q_h.finish();"
+      // TODO: Set up events
+      var h2d_wr_name = "events_h2d_wr_" + nodeOpName
+      var d2h_rd_name = "events_d2h_rd_" + nodeOpName
+      var events_name = "events_" + nodeOpName
+      _fpgaEventsH2DName = h2d_wr_name
+      _fpgaEventsD2HName = d2h_rd_name
+      _fpgaEventsName = events_name
+      _fpgaKernelEventsCode += "std::vector<cl::Event> " + h2d_wr_name + ";"
+      _fpgaKernelEventsCode += "std::vector<cl::Event> " + d2h_rd_name + ";"
+      if (sf == 30) {
+        _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_name + "[2];"
+      } else {
+        _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_name + ";"
+      }
+      _fpgaKernelEventsCode += h2d_wr_name + ".resize(1);"
+      _fpgaKernelEventsCode += d2h_rd_name + ".resize(1);"
+      if (sf == 30) {
+        var num_gqe_part_events = 0
+        if (leftmost_operator._children.last._cpuORfpga == 0 || leftmost_operator._children.last._nodeType == "SerializeFromObject") {
+          num_gqe_part_events += 1
+        }
+        if (_children.length > 1 && (rightmost_operator._children.head._cpuORfpga == 0 || rightmost_operator._children.head._nodeType == "SerializeFromObject")) {
+          num_gqe_part_events += 1
+        }
+        _fpgaKernelEventsCode += events_name + "[0].resize(" + num_gqe_part_events.toString + ");"
+        _fpgaKernelEventsCode += events_name + "[1].resize(hpTimes_join);"
+      } else { // sf - 1
+        _fpgaKernelEventsCode += events_name + ".resize(1);"
+      }
+      var events_grp_name = "events_grp_" + nodeOpName
+      _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_grp_name + ";"
+      var prev_events_grp_name = "prev_events_grp_" + nodeOpName
+      _fpgaKernelEventsCode += "std::vector<cl::Event> " + prev_events_grp_name + ";"
+      for (ch <- _children) {
+        if (ch.operation.nonEmpty && ch._cpuORfpga == 1 && this._fpgaOverlayType == ch.fpgaOverlayType) {
+          _fpgaKernelRunCode += prev_events_grp_name + ".push_back(" + ch.fpgaEventsH2DName + "[0]);"
+        }
+      }
+      // TODO: Run Xilinx L2 module kernels and link events
+      for (ch <- _children) {
+        if ((ch.cpuORfpga == 0) || ((ch.cpuORfpga == 1 && this._fpgaOverlayType != ch.fpgaOverlayType))) {
+          if (ch._operation.nonEmpty) {
+            _fpgaKernelRunCode += _fpgaTransEngineName + ".add(&(" + ch._fpgaOutputTableName + "));"
+          }
+        }
+      }
+      _fpgaKernelRunCode += _fpgaTransEngineName + ".host2dev(0, &(" + prev_events_grp_name + "), &(" + _fpgaEventsH2DName + "[0]));"
+      _fpgaKernelRunCode += events_grp_name + ".push_back(" + _fpgaEventsH2DName + "[0]);"
+      for (ch <- _children) {
+        if (ch.operation.nonEmpty && ch._cpuORfpga == 1 && this._fpgaOverlayType == ch.fpgaOverlayType) {
+          if (sf == 30) {
+            _fpgaKernelRunCode += events_grp_name + ".insert(std::end(" + events_grp_name + "), std::begin(" + ch.fpgaEventsName + "[0]), std::end(" + ch.fpgaEventsName + "[0]));"
+            _fpgaKernelRunCode += events_grp_name + ".insert(std::end(" + events_grp_name + "), std::begin(" + ch.fpgaEventsName + "[1]), std::end(" + ch.fpgaEventsName + "[1]));"
+          } else {
+            _fpgaKernelRunCode += events_grp_name + ".push_back(" + ch.fpgaEventsName + "[0]);"
+          }
+        }
+      }
+      if (sf == 30) {
+        var num_gqe_part_events = 0
+        if (joinTblOrderSwapped == false) {
+          if (leftmost_operator._children.head._cpuORfpga == 0 || leftmost_operator._children.head._nodeType == "SerializeFromObject") {
+            _fpgaKernelRunCode += kernel_name_left + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][" + num_gqe_part_events.toString + "]));"
+            num_gqe_part_events += 1
+          }
+          if (_children.length > 1 && (rightmost_operator._children.last._cpuORfpga == 0 || rightmost_operator._children.last._nodeType == "SerializeFromObject")) {
+            _fpgaKernelRunCode += kernel_name_right + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][" + num_gqe_part_events.toString + "]));"
+          }
+        } else {
+          if (leftmost_operator._children.last._cpuORfpga == 0 || leftmost_operator._children.last._nodeType == "SerializeFromObject") {
+            _fpgaKernelRunCode += kernel_name_left + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][" + num_gqe_part_events.toString + "]));"
+            num_gqe_part_events += 1
+          }
+          if (_children.length > 1 && (rightmost_operator._children.head._cpuORfpga == 0 || rightmost_operator._children.head._nodeType == "SerializeFromObject")) {
+            _fpgaKernelRunCode += kernel_name_right + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][" + num_gqe_part_events.toString + "]));"
+          }
+        }
+        _fpgaKernelRunCode += "for (int i(0); i < hpTimes_join; ++i) {"
+        if (num_gqe_part_events == 0) {
+          _fpgaKernelRunCode += "    " + kernel_name + "[i].run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[1][i]));"
+        } else {
+          _fpgaKernelRunCode += "    " + kernel_name + "[i].run(0, &(" + _fpgaEventsName + "[0]), &(" + _fpgaEventsName + "[1][i]));"
+        }
+        _fpgaKernelRunCode += "}"
+      } else {
+        _fpgaKernelRunCode += kernel_name + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0]));"
+      }
+
+      if (parentNode == null) {
+        _fpgaKernelRunCode += ""
+        if (sf == 30) {
+          _fpgaKernelRunCode += "for (int i(0); i < hpTimes_join; ++i) {"
+          _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "_partition_array" + "[i]));"
+          _fpgaKernelRunCode += "}"
+          _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "[1]), &(" + _fpgaEventsD2HName + "[0]));"
+        } else {
+          _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "));"
+          _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "), &(" + _fpgaEventsD2HName + "[0]));"
+        }
+        _fpgaKernelRunCode += "q_h.flush();"
+        _fpgaKernelRunCode += "q_h.finish();"
+      }
+      if (parentNode != null) {
+        // two consecutive overlay calls are for different overlay types - TODO: add support for when two overlay call types are the same but on two different FPGA devices
+        // special case: outer join
+        if (this._nodeType == "JOIN_LEFTANTI" && this._children(0)._nodeType == "JOIN_INNER" && this._joining_expression == this._children(0)._joining_expression) {
+          _fpgaKernelRunCode += ""
+          if (sf == 30) {
+            _fpgaKernelRunCode += "for (int i(0); i < hpTimes_join; ++i) {"
+            _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "_partition_array" + "[i]));"
+            _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + this._children(0)._fpgaOutputTableName + "_partition_array" + "[i]));"
+            _fpgaKernelRunCode += "}"
+            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "[1]), &(" + _fpgaEventsD2HName + "[0]));"
+          } else {
+            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "));"
+            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + this._children(0)._fpgaOutputTableName + "));"
+            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "), &(" + _fpgaEventsD2HName + "[0]));"
+          }
+          _fpgaKernelRunCode += "q_h.flush();"
+          _fpgaKernelRunCode += "q_h.finish();"
+
+          // combine inner and anti join tables results as the outer join table results
+          var tmp_join_col_concatenate = "SW_" + nodeOpName + "_concatenate("
+          tmp_join_col_concatenate += _fpgaOutputTableName + ", " + this._children(0)._fpgaOutputTableName + ");"
+          _fpgaKernelRunCode += tmp_join_col_concatenate
+
+          var sw_join_concatenate_func_cal = "void " + "SW_" + nodeOpName + "_concatenate("
+          sw_join_concatenate_func_cal += "Table &" + _fpgaOutputTableName + ", "
+          sw_join_concatenate_func_cal += "Table &" + this._children(0)._fpgaOutputTableName
+          sw_join_concatenate_func_cal += ") {"
+          joinConcatenateFuncCode += sw_join_concatenate_func_cal
+          joinConcatenateFuncCode += "    int start_idx = " + _fpgaOutputTableName + ".getNumRow();"
+          joinConcatenateFuncCode += "    int nrow = " + this._children(0)._fpgaOutputTableName + ".getNumRow();"
+          joinConcatenateFuncCode += "    int i = 0;"
+          joinConcatenateFuncCode += "    for (int r(start_idx); r<start_idx+nrow; ++r) {"
+          var col_idx = 0
+          for (o_col <- this._outputCols) {
+            var output_col_type = getColumnType(o_col, dfmap)
+            if (output_col_type == "IntegerType") {
+              joinConcatenateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + this._children(0)._fpgaOutputTableName + ".getInt32(i, " + col_idx.toString + ");"
+              joinConcatenateFuncCode += "        " + _fpgaOutputTableName + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
+            }
+            else {
+              joinConcatenateFuncCode += "        Error: unsupported data type - revisit cpu/fpga determination logic"
+            }
+            col_idx += 1
+          }
+          joinConcatenateFuncCode += "        i++;"
+          joinConcatenateFuncCode += "    }"
+          joinConcatenateFuncCode += "    " + _fpgaOutputTableName + ".setNumRow(start_idx + nrow);"
+          joinConcatenateFuncCode += "    std::cout << \"" + _fpgaOutputTableName + " #Row: \" << " + _fpgaOutputTableName + ".getNumRow() << std::endl;"
+          joinConcatenateFuncCode += "}"
+
+          for (line <- joinConcatenateFuncCode) {
+            _fpgaSWFuncCode += line
+          }
+
+          // transfer table data to another table to be used in a different 'context'
+          if (parentNode.fpgaOverlayType != this._fpgaOverlayType) {
+            _fpgaKernelRunCode += _fpgaOutputTableName + ".copyTableData(&(" + _fpgaOutputTableName.stripSuffix("_preprocess") + "));"
+            _fpgaOutputTableName = _fpgaOutputTableName.stripSuffix("_preprocess")
+          }
+        }
+        else if ((parentNode.cpuORfpga == 1 && parentNode.fpgaOverlayType != this._fpgaOverlayType) || (parentNode.cpuORfpga == 0)) {
+          _fpgaKernelRunCode += ""
+          if (sf == 30) {
+            _fpgaKernelRunCode += "for (int i(0); i < hpTimes_join; ++i) {"
+            _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "_partition_array" + "[i]));"
+            _fpgaKernelRunCode += "}"
+            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "[1]), &(" + _fpgaEventsD2HName + "[0]));"
+          } else {
+            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "));"
+            _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "), &(" + _fpgaEventsD2HName + "[0]));"
+          }
+          _fpgaKernelRunCode += "q_h.flush();"
+          _fpgaKernelRunCode += "q_h.finish();"
+
+          if (parentNode._fpgaOverlayType != this._fpgaOverlayType && parentNode.cpuORfpga != 0) {
+            // transfer table data to another table to be used in a different 'context'
+            _fpgaKernelRunCode += "WaitForEvents(" + _fpgaEventsD2HName + ");"
+            _fpgaKernelRunCode += _fpgaOutputTableName + ".copyTableData(&(" + _fpgaOutputTableName.stripSuffix("_preprocess") + "));"
+            _fpgaOutputTableName = _fpgaOutputTableName.stripSuffix("_preprocess")
+          }
+        }
+      }
+  }
+
+  def genFPGAAggOverlayCode(parentNode: SQL2FPGA_QPlan, dfmap: Map[String, DataFrame], nodeOpName :String, sf : Int, queryNum: Int): Unit = {
+    // tag:overlay1
+    var nodeCfgCmd = "cfg_" + nodeOpName + "_cmds"
+    var nodeGetCfgFuncName = "get_cfg_dat_" + nodeOpName + "_gqe_aggr"
+    _fpgaConfigCode += "AggrCfgCmd " + nodeCfgCmd + ";"
+    _fpgaConfigCode += nodeCfgCmd + ".allocateHost();"
+    _fpgaConfigCode += nodeGetCfgFuncName + "(" + nodeCfgCmd + ".cmd);"
+    _fpgaConfigCode += nodeCfgCmd + ".allocateDevBuffer(context_a, 32);"
+
+    var nodeCfgCmd_out = "cfg_" + nodeOpName + "_cmds_out"
+    _fpgaConfigCode += "AggrCfgCmd " + nodeCfgCmd_out + ";"
+    _fpgaConfigCode += nodeCfgCmd_out + ".allocateHost();"
+    _fpgaConfigCode += nodeCfgCmd_out + ".allocateDevBuffer(context_a, 33);"
+
+    // Generate the function that generates the Xilinx L2 module configurations
+    var aggrConsolidateFuncCode = new ListBuffer[String]()
+    var cfgFuncCode = new ListBuffer[String]()
+    cfgFuncCode += "void " + nodeGetCfgFuncName + "(ap_uint<32>* buf) {"
+    var cfgFuncCode_gqePart = new ListBuffer[String]()
+    if (sf == 30) {
+      cfgFuncCode_gqePart += "void " + nodeGetCfgFuncName + "_part" + "(ap_uint<512>* hbuf) {"
+    }
+    var innerMostOperator = getInnerMostBindedOperator(this)
+    var input_table_col = innerMostOperator._children.head.outputCols
+    var input_table_name = innerMostOperator._children.head._fpgaOutputTableName
+    var nodeCfgCmd_part = "cfg_" + nodeOpName + "_cmds_part"
+    if (sf == 30) {
+      if (innerMostOperator._children.head._cpuORfpga == 0 || innerMostOperator._children.head._nodeType == "SerializeFromObject") {
+        _fpgaConfigCode += "cfgCmd " + nodeCfgCmd_part + ";"
+        _fpgaConfigCode += nodeCfgCmd_part + ".allocateHost();"
+        _fpgaConfigCode += nodeGetCfgFuncName + "_part" + " (" + nodeCfgCmd_part + ".cmd);"
+        _fpgaConfigCode += nodeCfgCmd_part + ".allocateDevBuffer(context_a, 32);"
+      }
+    }
+    // ----------------------------------- Debug info -----------------------------------
+    cfgFuncCode += "    // StringRowIDSubstitution: " + _stringRowIDSubstitution + " StringRowIDBackSubstitution: " + _stringRowIDBackSubstitution
+    cfgFuncCode += "    // Supported operation: " + _nodeType
+    cfgFuncCode += "    // Operation: " + _operation
+    for (binded_overlay <- _bindedOverlayInstances) {
+      cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
+    }
+    for (binded_overlay <- _bindedOverlayInstances_left) {
+      cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
+    }
+    for (binded_overlay <- _bindedOverlayInstances_right) {
+      cfgFuncCode += "        // Binded Operation: " + binded_overlay._nodeType + " -> operations: " + binded_overlay._operation
+    }
+    cfgFuncCode += "    // Input Table: " + input_table_col
+    cfgFuncCode += "    // Output Table: " + _outputCols
+    cfgFuncCode += "    // Node Depth: " + _treeDepth
+
+    cfgFuncCode += "    ap_uint<32>* config = buf;"
+    cfgFuncCode += "    memset(config, 0, sizeof(ap_uint<32>) * 83);"
+    if (sf == 30) {
+      cfgFuncCode_gqePart += "    ap_uint<512>* b = hbuf;"
+      cfgFuncCode_gqePart += "    memset(b, 0, sizeof(ap_uint<512>) * 9);"
+      cfgFuncCode_gqePart += "    ap_uint<512> t = 0;"
+      cfgFuncCode_gqePart += ""
+    }
+
+    // A record to track how inputs cols navigates through the overlay
+    var col_idx_dict_prev = collection.mutable.Map[String, Int]()
+    var idx_col_dict_prev = collection.mutable.Map[Int, String]()
+    var tmp_idx = 0
+    for (i_col <- input_table_col) {
+      col_idx_dict_prev += (i_col -> tmp_idx)
+      idx_col_dict_prev += (tmp_idx -> i_col)
+      tmp_idx += 1
+    }
+
+    //eval0 - Alec-added
+    cfgFuncCode += ""
+    cfgFuncCode += "    // eval0"
+    var eval0_func = "NOP"
+    var eval0_func_call = "// eval0: NOP"
+    var groupby_operator = getGroupByAggregateOperator(this)
+    var col_idx_dict_next = col_idx_dict_prev.clone()
+    var idx_col_dict_next = idx_col_dict_prev.clone()
+    if (groupby_operator != null && groupby_operator._aggregate_expression.nonEmpty) {
+      // get first aggr expr (w/ evaluation)
+      var aggr_expr = groupby_operator._aggregate_expression(0)
+      var first_expr = true
+      var eval_found = false
+      for (eval_expr <- groupby_operator._aggregate_expression) {
+        if (!isPureAggrOperation_sub(eval_expr) && first_expr && !eval_found) {
+          aggr_expr = eval_expr
+          first_expr = false
+          eval_found = true
+        }
+      }
+      if (eval_found) {
+        // move all referenced cols in aggr expr to the front
+        var start_idx = 0
+        for (ref_col <- aggr_expr.references) {
+          // place reference col and idx to 'start_idx'
+          var prev_idx = col_idx_dict_next(ref_col.toString)
+          col_idx_dict_next(ref_col.toString) = start_idx
+          var prev_col = idx_col_dict_next(start_idx)
+          idx_col_dict_next(start_idx) = ref_col.toString
+          // place the previous col and idx at new location
+          col_idx_dict_next(prev_col) = prev_idx
+          idx_col_dict_next(prev_idx) = prev_col
+          // increment on the next front idx
+          start_idx += 1
+        }
+        // eval dynamicALUCompiler function call
+        var tmp_aggr_expr = new ListBuffer[Expression]()
+        tmp_aggr_expr += aggr_expr
+        if (isPureAggrOperation(tmp_aggr_expr)) {
+          eval0_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
+          eval0_func_call = "// eval0: NOP"
+        }
+        else {
+          eval0_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
+          var aggr_const_i = new Array[Int](4) // default set as zero
+          var strm_order_i = 1
+          var (aggr_str, aggr_const, strm_order) = getAggregateExpression_ALUOPCompiler_cmd(aggr_expr, aggr_const_i, strm_order_i)
+          aggr_str = aggr_str.stripPrefix("(")
+          aggr_str = aggr_str.stripSuffix(")")
+          var ALUOPCompiler = "xf::database::dynamicALUOPCompiler<uint32_t, uint32_t, uint32_t, uint32_t>(\""
+          ALUOPCompiler += aggr_str + "\", "
+          ALUOPCompiler += aggr_const(0) + ", " + aggr_const(1) + ", " + aggr_const(2) + ", " + aggr_const(3) + ", "
+          ALUOPCompiler += "op_eval_0);"
+          eval0_func_call = ALUOPCompiler
+
+          // add aliase col to col_idx and idx_col table
+          var aliase_col = aggr_expr.toString.split(" AS ").last
+          col_idx_dict_next += (aliase_col -> 8)
+          idx_col_dict_next += (8 -> aliase_col)
+        }
+      }
+      else {
+        cfgFuncCode += "    // NO evaluation 0 in aggregation expression - eval0"
+      }
+    }
+    else {
+      cfgFuncCode += "    // NO aggregation operation - eval0"
+    }
+
+    cfgFuncCode += "    ap_uint<32> t;"
+    var i_tbl_col_list = "signed char id[] = {"
+    // input col assignment
+    for (col_idx <- 0 to 8 - 1) { //max 8 cols for input table
+      if (col_idx < idx_col_dict_prev.size) { // input cols
+        var col_name = idx_col_dict_next(col_idx)
+        var prev_col_idx = col_idx_dict_prev(col_name)
+        i_tbl_col_list += prev_col_idx.toString + ","
+      }
+      else {
+        i_tbl_col_list += "-1,"
+      }
+    }
+    i_tbl_col_list = i_tbl_col_list.stripSuffix(",")
+    i_tbl_col_list += "};"
+    cfgFuncCode += "    " + i_tbl_col_list
+    cfgFuncCode += "    for (int c = 0; c < 4; ++c) {"
+    cfgFuncCode += "        t.range(8 * c + 7, 8 * c) = id[c];"
+    cfgFuncCode += "    }"
+    cfgFuncCode += "    config[0] = t;"
+    cfgFuncCode += "    for (int c = 0; c < 4; ++c) {"
+    cfgFuncCode += "        t.range(8 * c + 7, 8 * c) = id[c + 4];"
+    cfgFuncCode += "    }"
+    cfgFuncCode += "    config[1] = t;"
+    cfgFuncCode += ""
+    cfgFuncCode += "    ap_uint<289> op_eval_0 = 0;" + " // " + eval0_func
+    cfgFuncCode += "    " + eval0_func_call
+    cfgFuncCode += "    for (int i = 0; i < 9; i++) {"
+    cfgFuncCode += "        config[i + 2] = op_eval_0(32 * (i + 1) - 1, 32 * i);"
+    cfgFuncCode += "    }"
+    cfgFuncCode += "    config[11] = op_eval_0[288];"
+    // update prev with next
+    col_idx_dict_prev = col_idx_dict_next.clone()
+    idx_col_dict_prev = idx_col_dict_next.clone()
+
+    //eval1 - Alec-added
+    cfgFuncCode += ""
+    cfgFuncCode += "    // eval0 -> eval1"
+    var eval1_func = "NOP"
+    var eval1_func_call = "// eval1: NOP"
+    if (groupby_operator != null && groupby_operator._aggregate_expression.nonEmpty) {
+      // get second aggr expr (w/ evaluation)
+      var aggr_expr = groupby_operator._aggregate_expression(0)
+      var first_expr = true
+      var second_expr = true
+      var eval_found = false
+      for (eval_expr <- groupby_operator._aggregate_expression) {
+        if (!isPureAggrOperation_sub(eval_expr)) {
+          if (first_expr) {
+            first_expr = false
+          }
+          else {
+            if (second_expr && !eval_found) {
+              aggr_expr = eval_expr
+              eval_found = true
+            }
+          }
+        }
+        else { //pure aggregation cols e.g., sum(col_name)
+          var aliase_col = eval_expr.toString.split(" AS ").last
+          var ref_col_idx = -1
+          if (eval_expr.references.nonEmpty) {
+            var ref_col = eval_expr.references.head.toString
+            ref_col_idx = col_idx_dict_next(ref_col)
+          }
+          col_idx_dict_next += (aliase_col -> ref_col_idx)
+        }
+      }
+      if (eval_found) {
+        //move all referenced cols in aggr expr to the front
+        var start_idx = 0
+        for (ref_col <- aggr_expr.references) {
+          // place reference col and idx to 'start_idx'
+          var prev_idx = col_idx_dict_next(ref_col.toString)
+          col_idx_dict_next(ref_col.toString) = start_idx
+          var prev_col = idx_col_dict_next(start_idx)
+          idx_col_dict_next(start_idx) = ref_col.toString
+          // place the previous col and idx at new location
+          col_idx_dict_next(prev_col) = prev_idx
+          idx_col_dict_next(prev_idx) = prev_col
+          // increment on the next front idx
+          start_idx += 1
+        }
+
+        // move eval0 result from 8th col to append after the normal cols
+        var eval0_result_col_name = idx_col_dict_next(8)
+        col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size - 1
+        idx_col_dict_next.remove(8)
+        idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
+
+        // eval dynamicALUCompiler function call
+        var tmp_aggr_expr = new ListBuffer[Expression]()
+        tmp_aggr_expr += aggr_expr
+        if (isPureAggrOperation(tmp_aggr_expr)) {
+          eval1_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
+          eval1_func_call = ""
+        }
+        else {
+          eval1_func = getAggregateExpression_ALUOPCompiler(aggr_expr)
+          var aggr_const_i = new Array[Int](4) // default set as zero
+          var strm_order_i = 1
+          var (aggr_str, aggr_const, strm_order) = getAggregateExpression_ALUOPCompiler_cmd(aggr_expr, aggr_const_i, strm_order_i)
+          aggr_str = aggr_str.stripPrefix("(")
+          aggr_str = aggr_str.stripSuffix(")")
+          var ALUOPCompiler = "xf::database::dynamicALUOPCompiler<uint32_t, uint32_t, uint32_t, uint32_t>(\""
+          ALUOPCompiler += aggr_str + "\", "
+          ALUOPCompiler += aggr_const(0) + ", " + aggr_const(1) + ", " + aggr_const(2) + ", " + aggr_const(3) + ", "
+          ALUOPCompiler += "op_eval_1);"
+          eval1_func_call = ALUOPCompiler
+
+          // add aliase col to col_idx and idx_col table
+          var aliase_col = aggr_expr.toString.split(" AS ").last
+          col_idx_dict_next += (aliase_col -> 8)
+          idx_col_dict_next += (8 -> aliase_col)
+        }
+      }
+      else {
+        cfgFuncCode += "    // NO evaluation 1 in aggregation expression - eval1"
+        // if eval0 != null, move eval0 result from 8th col to append after the normal cols
+        if (idx_col_dict_next.contains(8)) {
+          var eval0_result_col_name = idx_col_dict_next(8)
+          col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size - 1
+          idx_col_dict_next.remove(8)
+          idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
+        }
+      }
+    }
+    else {
+      cfgFuncCode += "    // NO aggregation operation - eval1"
+      // if eval0 != null, move eval0 result from 8th col to append after the normal cols
+      if (idx_col_dict_next.contains(8)) {
+        var eval0_result_col_name = idx_col_dict_next(8)
+        col_idx_dict_next(eval0_result_col_name) = idx_col_dict_next.size - 1
+        idx_col_dict_next.remove(8)
+        idx_col_dict_next += (idx_col_dict_next.size -> eval0_result_col_name)
+      }
+    }
+
+    // input col assignment
+    cfgFuncCode += "    ap_int<64> shuffle1_cfg;"
+    for (ss1 <- 0 to 8 - 1) {
+      if (ss1 < col_idx_dict_prev.size) {
+        if (idx_col_dict_prev.contains(ss1)) { // normal cols
+          var col_name = idx_col_dict_next(ss1)
+          var prev_col_idx = col_idx_dict_prev(col_name)
+          cfgFuncCode += "    shuffle1_cfg(" + ((ss1 + 1) * 8 - 1).toString + ", " + (ss1 * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + col_name
+        } else { //eval col - always at idx 8
+          cfgFuncCode += "    shuffle1_cfg(" + ((ss1 + 1) * 8 - 1).toString + ", " + (ss1 * 8).toString + ") = " + "8" + ";" + " // " + idx_col_dict_prev(8)
+        }
+      } else {
+        cfgFuncCode += "    shuffle1_cfg(" + ((ss1 + 1) * 8 - 1).toString + ", " + (ss1 * 8).toString + ") = -1;"
+      }
+    }
+    cfgFuncCode += "    config[67] = shuffle1_cfg(31, 0);"
+    cfgFuncCode += "    config[68] = shuffle1_cfg(63, 32);"
+    cfgFuncCode += ""
+    cfgFuncCode += "    ap_uint<289> op_eval_1 = 0;" + " // " + eval1_func
+    cfgFuncCode += "    " + eval1_func_call
+    cfgFuncCode += "    for (int i = 0; i < 9; i++) {"
+    cfgFuncCode += "        config[i + 12] = op_eval_1(32 * (i + 1) - 1, 32 * i);"
+    cfgFuncCode += "    }"
+    cfgFuncCode += "    config[21] = op_eval_1[288];"
+    // update prev with next
+    col_idx_dict_prev = col_idx_dict_next.clone()
+    idx_col_dict_prev = idx_col_dict_next.clone()
+
+    //filter - Alec-added
+    cfgFuncCode += ""
+    cfgFuncCode += "    // eval1 -> filter"
+    var filter_operator = getFilterOperator(this)
+    var filter_config_func_call = ""
+    if (filter_operator == null || filter_operator._filtering_expression == null) {
+      filter_config_func_call = "gen_pass_fcfg"
+    }
+    else {
+      // TODO: re-shuffle input col to be situated in the first 4 col
+      var tmp_idx = 0
+      for (ref_col <- filter_operator._filtering_expression.references) {
+        var prev_ref_idx = col_idx_dict_next(ref_col.toString)
+        var tmp_col = idx_col_dict_next(tmp_idx)
+        col_idx_dict_next(tmp_col) = prev_ref_idx
+        idx_col_dict_next(prev_ref_idx) = ref_col.toString
+        col_idx_dict_next(ref_col.toString) = tmp_idx
+        idx_col_dict_next(tmp_idx) = ref_col.toString
+        tmp_idx += 1
+      }
+      var filterCfgFuncName = "gen_fcfg_" + _fpgaNodeName
+      filter_config_func_call = filterCfgFuncName
+      var filterCfgFuncCode = getFilterConfigFuncCode(filterCfgFuncName, filter_operator, col_idx_dict_next)
+      for (line <- filterCfgFuncCode) {
+        _fpgaConfigFuncCode += line
+      }
+    }
+    // input col assignment
+    cfgFuncCode += "    ap_int<64> shuffle2_cfg;"
+    for (ss2 <- 0 to 8 - 1) {
+      if (ss2 < col_idx_dict_prev.size) {
+        if (idx_col_dict_prev.contains(ss2)) { // normal cols
+          var col_name = idx_col_dict_next(ss2)
+          var prev_col_idx = col_idx_dict_prev(col_name)
+          cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + col_name
+        }
+        else if (idx_col_dict_prev.contains(8)) { //eval col - always at idx 8
+          cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = " + "8" + ";" + " // " + idx_col_dict_prev(8)
+        }
+        else {
+          cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = -1;"
+        }
+      } else {
+        cfgFuncCode += "    shuffle2_cfg(" + ((ss2 + 1) * 8 - 1).toString + ", " + (ss2 * 8).toString + ") = -1;"
+      }
+    }
+    cfgFuncCode += "    config[69] = shuffle2_cfg(31, 0);"
+    cfgFuncCode += "    config[70] = shuffle2_cfg(63, 32);"
+    cfgFuncCode += ""
+    cfgFuncCode += "    uint32_t fcfg[45];"
+    cfgFuncCode += "    " + filter_config_func_call + "(fcfg);"
+    cfgFuncCode += "    memcpy(&config[22], fcfg, sizeof(uint32_t) * 45);"
+    // update prev with next
+    col_idx_dict_prev = col_idx_dict_next.clone()
+    idx_col_dict_prev = idx_col_dict_next.clone()
+
+    //groupBy - Alec-added
+    cfgFuncCode += ""
+    cfgFuncCode += "    // filter -> groupBy"
+    // input key col assignment
+    if (sf == 30) {
+      //gqePart configuration bits
+      var filter_a_config_call = "gen_pass_fcfg";
+      cfgFuncCode_gqePart += "    // input table a"
+      var tbl_A_col_list = "signed char id_a[] = {"
+      var col_name = ""
+      var col_idx = -1
+      var col_counter = 0
+      for (key_col <- groupby_operator._groupBy_operation) { // key cols
+        col_idx = col_idx_dict_prev(key_col)
+        tbl_A_col_list += col_idx.toString + ","
+        col_counter += 1
+      }
+      for (o_col <- groupby_operator._outputCols) {
+        if (!groupby_operator._groupBy_operation.contains(o_col)) { // pld cols
+          col_idx = col_idx_dict_prev(o_col)
+          tbl_A_col_list += col_idx.toString + ","
+          col_counter += 1
+        }
+      }
+      while (col_counter < 8) {
+        tbl_A_col_list += "-1,"
+        col_counter += 1
+      }
+      tbl_A_col_list = tbl_A_col_list.stripSuffix(",")
+      tbl_A_col_list += "};"
+      cfgFuncCode_gqePart += "    " + tbl_A_col_list
+      cfgFuncCode_gqePart += "    for (int c = 0; c < 8; ++c) {"
+      cfgFuncCode_gqePart += "        t.range(56 + 8 * c + 7, 56 + 8 * c) = id_a[c];"
+      cfgFuncCode_gqePart += "    }"
+      cfgFuncCode_gqePart += "    // filter tbl_a config"
+      cfgFuncCode_gqePart += "    uint32_t cfga[45];"
+      cfgFuncCode_gqePart += "    " + filter_a_config_call + "(cfga);"
+      cfgFuncCode_gqePart += "    memcpy(&b[3], cfga, sizeof(uint32_t) * 45);"
+      var filter_b_config_call = "gen_pass_fcfg";
+      cfgFuncCode_gqePart += ""
+      cfgFuncCode_gqePart += "    // input table b"
+      var tbl_B_col_list = "signed char id_b[] = {"
+      for (b <- 0 to 8 - 1) {
+        tbl_B_col_list += "-1,"
+      }
+      tbl_B_col_list = tbl_B_col_list.stripSuffix(",")
+      tbl_B_col_list += "};"
+      cfgFuncCode_gqePart += "    " + tbl_B_col_list
+      cfgFuncCode_gqePart += "    for (int c = 0; c < 8; ++c) {"
+      cfgFuncCode_gqePart += "        t.range(120 + 8 * c + 7, 120 + 8 * c) = id_b[c];"
+      cfgFuncCode_gqePart += "    }"
+      cfgFuncCode_gqePart += "    // filter tbl_b config"
+      cfgFuncCode_gqePart += "    uint32_t cfgb[45];"
+      cfgFuncCode_gqePart += "    " + filter_b_config_call + "(cfgb);"
+      cfgFuncCode_gqePart += "    memcpy(&b[6], cfgb, sizeof(uint32_t) * 45);"
+      cfgFuncCode_gqePart += ""
+      cfgFuncCode_gqePart += "    // join config"
+      cfgFuncCode_gqePart += "    t.set_bit(0, 1);    // join"
+      var dual_key_join_on = 0
+      if (groupby_operator._groupBy_operation.length == 2) {
+        dual_key_join_on = 1
+      } else {
+        dual_key_join_on = 0
+      }
+      cfgFuncCode_gqePart += "    t.set_bit(2, " + dual_key_join_on + ");    // dual-key"
+      cfgFuncCode_gqePart += "    t.range(5, 3) = 0;  // hash join flag = 0 for normal, 1 for semi, 2 for anti"
+      cfgFuncCode_gqePart += ""
+      cfgFuncCode_gqePart += "    b[0] = t;"
+      cfgFuncCode_gqePart += "}"
+      //gqeAggr configuration bits
+      cfgFuncCode += "    ap_int<64> shuffle3_cfg;"
+      for (ss3 <- 0 to 8 - 1) {
+        if (ss3 < groupby_operator._groupBy_operation.length) {
+          var col_name = groupby_operator._groupBy_operation(ss3)
+          var col_idx = col_idx_dict_prev(col_name)
+          cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = " + col_idx.toString + ";" + " // " + col_name
+        } else {
+          cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = -1;"
+        }
+      }
+      cfgFuncCode += "    config[71] = shuffle3_cfg(31, 0);"
+      cfgFuncCode += "    config[72] = shuffle3_cfg(63, 32);"
+      cfgFuncCode += ""
+      // input pld col assignment
+      cfgFuncCode += "    ap_int<64> shuffle4_cfg;"
+      var tmp_col_idx = 0
+      for (o_col <- groupby_operator._outputCols) {
+        if (!groupby_operator._groupBy_operation.contains(o_col)) { // pld cols
+          var prev_col_idx = col_idx_dict_prev(o_col)
+          cfgFuncCode += "    shuffle4_cfg(" + ((tmp_col_idx + 1) * 8 - 1).toString + ", " + (tmp_col_idx * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + o_col
+          tmp_col_idx += 1
+        }
+      }
+      for (ss4 <- tmp_col_idx to 8 - 1) { // unused cols
+        cfgFuncCode += "    shuffle4_cfg(" + ((ss4 + 1) * 8 - 1).toString + ", " + (ss4 * 8).toString + ") = -1;"
+      }
+      cfgFuncCode += "    config[73] = shuffle4_cfg(31, 0);"
+      cfgFuncCode += "    config[74] = shuffle4_cfg(63, 32);"
+      cfgFuncCode += ""
+
+    } else {
+      cfgFuncCode += "    ap_int<64> shuffle3_cfg;"
+      for (ss3 <- 0 to 8 - 1) {
+        if (ss3 < groupby_operator._groupBy_operation.length) {
+          var col_name = groupby_operator._groupBy_operation(ss3)
+          var col_idx = col_idx_dict_prev(col_name)
+          cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = " + col_idx.toString + ";" + " // " + col_name
+        } else {
+          cfgFuncCode += "    shuffle3_cfg(" + ((ss3 + 1) * 8 - 1).toString + ", " + (ss3 * 8).toString + ") = -1;"
+        }
+      }
+      cfgFuncCode += "    config[71] = shuffle3_cfg(31, 0);"
+      cfgFuncCode += "    config[72] = shuffle3_cfg(63, 32);"
+      cfgFuncCode += ""
+      // input pld col assignment
+      cfgFuncCode += "    ap_int<64> shuffle4_cfg;"
+      var tmp_col_idx = 0
+      for (o_col <- groupby_operator._outputCols) {
+        if (!groupby_operator._groupBy_operation.contains(o_col)) { // pld cols
+          var prev_col_idx = col_idx_dict_prev(o_col)
+          cfgFuncCode += "    shuffle4_cfg(" + ((tmp_col_idx + 1) * 8 - 1).toString + ", " + (tmp_col_idx * 8).toString + ") = " + prev_col_idx.toString + ";" + " // " + o_col
+          tmp_col_idx += 1
+        }
+      }
+      for (ss4 <- tmp_col_idx to 8 - 1) { // unused cols
+        cfgFuncCode += "    shuffle4_cfg(" + ((ss4 + 1) * 8 - 1).toString + ", " + (ss4 * 8).toString + ") = -1;"
+      }
+      cfgFuncCode += "    config[73] = shuffle4_cfg(31, 0);"
+      cfgFuncCode += "    config[74] = shuffle4_cfg(63, 32);"
+      cfgFuncCode += ""
+    }
+    // aggr_op assignment on pld cols
+    cfgFuncCode += "    ap_uint<4> aggr_op[8] = {0, 0, 0, 0, 0, 0, 0, 0};"
+    for (aggr_idx <- 0 to 8 - 1) {
+      if (aggr_idx < groupby_operator._aggregate_expression.length) {
+        var tmp_aggr_expr = groupby_operator._aggregate_expression(aggr_idx)
+        if (isPureEvalOperation_sub(tmp_aggr_expr)) { // no aggrgation: TODO: is this possible?
+          cfgFuncCode += "    aggr_op[" + aggr_idx.toString + "] = xf::database::enums::AOP_SUM;"
+        } else {
+          // grab aggr_op from _aggregate_expression[aggr_idx]
+          var aggr_op_enum = getAggregateOpEnum(tmp_aggr_expr)
+          cfgFuncCode += "    aggr_op[" + aggr_idx.toString + "] = " + aggr_op_enum + ";"
+        }
+      }
+      else {
+        cfgFuncCode += "    aggr_op[" + aggr_idx.toString + "] = xf::database::enums::AOP_SUM;"
+      }
+    }
+    cfgFuncCode += "    config[75] = (aggr_op[7], aggr_op[6], aggr_op[5], aggr_op[4], aggr_op[3], aggr_op[2], aggr_op[1], aggr_op[0]);"
+    cfgFuncCode += ""
+    // # of col types
+    var num_keys = groupby_operator._groupBy_operation.length
+    var num_plds = groupby_operator._aggregate_operation.length
+    cfgFuncCode += "    config[76] = " + (num_keys).toString + "; //# key col"
+    cfgFuncCode += "    config[77] = " + (num_plds).toString + "; //# pld col"
+    cfgFuncCode += "    config[78] = 0; //# aggr num"
+    cfgFuncCode += ""
+    // column merge selection
+    cfgFuncCode += "    ap_uint<8> merge[5];"
+    // merge selection
+    var key_col_selection = "0b"
+    var pld_col_selection = "0b"
+    for (merg_col <- 0 to 8 - 1) {
+      if (merg_col < num_keys) {
+        key_col_selection += "1"
+      } else {
+        key_col_selection += "0"
+      }
+      var pld_idx = 8 - merg_col
+      var pld_aggr_enum = "xf::database::enums::AOP_SUM"
+      if (pld_idx <= num_plds) {
+        pld_aggr_enum = getAggregateOpEnum(groupby_operator._aggregate_expression(pld_idx - 1))
+      }
+      if ((merg_col < num_keys) || (pld_idx <= num_plds && pld_aggr_enum != "xf::database::enums::AOP_SUM" && pld_aggr_enum != "xf::database::enums::AOP_MEAN")) {
+        pld_col_selection += "1"
+      } else {
+        pld_col_selection += "0"
+      }
+    }
+    cfgFuncCode += "    merge[0] = " + key_col_selection + ";"
+    cfgFuncCode += "    merge[1] = 0;"
+    cfgFuncCode += "    merge[2] = 0;"
+    cfgFuncCode += "    merge[3] = " + pld_col_selection + ";"
+    cfgFuncCode += "    merge[4] = 0;"
+    var key_pld_reverse = 1
+    var merged_col_reverse = 0
+    cfgFuncCode += "    config[79] = (" + key_pld_reverse + ", merge[2], merge[1], merge[0]);"
+    cfgFuncCode += "    config[80] = (" + merged_col_reverse + ", merge[4], merge[3]);"
+
+    //aggr - Alec-added
+    cfgFuncCode += ""
+    cfgFuncCode += "    // aggr - demux mux direct_aggr"
+    var nonGroupbyAggregate_operator = getNonGroupByAggregateOperator(this)
+    if (nonGroupbyAggregate_operator != null) {
+      cfgFuncCode += "    config[81] = 1;"
+    }
+    else {
+      cfgFuncCode += "    config[81] = 0;"
+    }
+
+    //output - Alec-added
+    cfgFuncCode += ""
+    cfgFuncCode += "    // output - demux mux direct_aggr"
+    cfgFuncCode += "    config[82] = 0xffff;"
+    cfgFuncCode += "}"
+
+    for (line <- cfgFuncCode) {
+      _fpgaConfigFuncCode += line
+    }
+    if (sf == 30) {
+      for (line <- cfgFuncCode_gqePart) {
+        _fpgaConfigFuncCode += line
+      }
+    }
+    var sw_aggr_consolidate_func_cal = "void " + "SW_" + nodeOpName + "_consolidate("
+    if (sf == 30) {
+      sw_aggr_consolidate_func_cal += "Table *" + _fpgaOutputTableName + ", "
+      sw_aggr_consolidate_func_cal += "Table &" + _fpgaOutputTableName.stripSuffix("_preprocess") + ", "
+      sw_aggr_consolidate_func_cal += "int hpTimes"
+    } else {
+      sw_aggr_consolidate_func_cal += "Table &" + _fpgaOutputTableName + ", "
+      sw_aggr_consolidate_func_cal += "Table &" + _fpgaOutputTableName.stripSuffix("_preprocess")
+    }
+
+    sw_aggr_consolidate_func_cal += ") {"
+    aggrConsolidateFuncCode += sw_aggr_consolidate_func_cal
+    aggrConsolidateFuncCode += "    int nrow = 0;"
+    var tbl_partition_suffix = ""
+    if (sf == 30) {
+      aggrConsolidateFuncCode += "for (int p_idx = 0; p_idx < hpTimes; p_idx++) {"
+      tbl_partition_suffix = "[p_idx]"
+    }
+    aggrConsolidateFuncCode += "    int nrow_p = " + _fpgaOutputTableName + tbl_partition_suffix + ".getNumRow();"
+    aggrConsolidateFuncCode += "    for (int r(0); r<nrow_p; ++r) {"
+    var col_idx = 0
+    for (o_col <- groupby_operator._outputCols) {
+      var output_col_type = getColumnType(o_col, dfmap)
+      // TODO: read from input table into tmp data
+      var key_idx = (8 - 1) - groupby_operator._groupBy_operation.indexOf(o_col) // key cols are stored in a reverse order
+      var pld_low_idx = 0
+      var pld_high_idx = 0
+      for (aggr_op <- groupby_operator._aggregate_operation) {
+        if (aggr_op.split(" AS ").last == o_col) {
+          var this_pld_idx = groupby_operator._aggregate_operation.indexOf(aggr_op)
+          pld_low_idx = this_pld_idx // AOP::SUM[31:0] stored at 0th
+          pld_high_idx = 8 + this_pld_idx // AOP::SUM[63:32] stored at 8th
+        }
+      }
+      if (groupby_operator._groupBy_operation.contains(o_col)) { // key col
+        aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + key_idx.toString + ");"
+        aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
+      }
+      else { // payload col
+        var pld_aggr_enum = getAggregateOpEnum(groupby_operator._aggregate_expression(pld_low_idx))
+        if (pld_aggr_enum == "xf::database::enums::AOP_SUM" || pld_aggr_enum == "xf::database::enums::AOP_MEAN") {
+          if (output_col_type == "IntegerType") {
+            aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + pld_low_idx.toString + ");"
+            aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
+          }
+          else if (output_col_type == "LongType") {
+            aggrConsolidateFuncCode += "        int64_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".combineInt64(r, " + pld_high_idx.toString + ", " + pld_low_idx.toString + ");"
+            aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt64(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
+          }
+          else if (output_col_type == "DoubleType") {
+            aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + pld_low_idx.toString + ");"
+            aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
+          }
+          else {
+            aggrConsolidateFuncCode += "        // Error: unsupported data type - revisit cpu/fpga determination logic - " + output_col_type.toString + " - default to IntegerType"
+            aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + pld_low_idx.toString + ");"
+            aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
+          }
+        }
+        else { // MIN, MAX, COUNT, COUNTNONZERO
+          aggrConsolidateFuncCode += "        int32_t " + stripColumnName(o_col) + " = " + _fpgaOutputTableName + tbl_partition_suffix + ".getInt32(r, " + pld_low_idx.toString + ");"
+          aggrConsolidateFuncCode += "        " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setInt32(r, " + col_idx.toString + ", " + stripColumnName(o_col) + ");"
+        }
+      }
+      col_idx += 1
+    }
+    aggrConsolidateFuncCode += "    }"
+    aggrConsolidateFuncCode += "    nrow += nrow_p;"
+    if (sf == 30) {
+      aggrConsolidateFuncCode += "}"
+    }
+    aggrConsolidateFuncCode += "    " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".setNumRow(nrow);"
+    aggrConsolidateFuncCode += "    std::cout << \"" + _fpgaOutputTableName.stripSuffix("_preprocess") + " #Row: \" << " + _fpgaOutputTableName.stripSuffix("_preprocess") + ".getNumRow() << std::endl;"
+    aggrConsolidateFuncCode += "}"
+
+    for (line <- aggrConsolidateFuncCode) {
+      _fpgaSWFuncCode += line
+    }
+
+    // TODO: Set up Xilinx L2 module kernels in host code
+    var kernel_name = ""
+    var partition_kernel_name = ""
+    if (sf == 30) {
+      // if (innerMostOperator._children.head._cpuORfpga == 0 || innerMostOperator._children.head._nodeType == "SerializeFromObject") {
+      // }
+      partition_kernel_name = "krnl_" + nodeOpName + "_part"
+      _fpgaKernelSetupCode += "AggrKrnlEngine " + partition_kernel_name + ";"
+      _fpgaKernelSetupCode += partition_kernel_name + " = AggrKrnlEngine(program_a, q_a, \"gqePart\");"
+      _fpgaKernelSetupCode += partition_kernel_name + ".setup_hp(512, 0, power_of_hpTimes_aggr, " + input_table_name + ", " + input_table_name + "_partition" + ", " + nodeCfgCmd_part + ");"
+
+      kernel_name = "krnl_" + nodeOpName
+      _fpgaKernelSetupCode += "AggrKrnlEngine " + kernel_name + "[hpTimes_aggr];"
+      _fpgaKernelSetupCode += "for (int i = 0; i < hpTimes_aggr; i++) {"
+      _fpgaKernelSetupCode += "    " + kernel_name + "[i] = AggrKrnlEngine(program_a, q_a, \"gqeAggr\");"
+      _fpgaKernelSetupCode += "}"
+      _fpgaKernelSetupCode += "for (int i = 0; i < hpTimes_aggr; i++) {"
+      _fpgaKernelSetupCode += "    " + kernel_name + "[i].setup(" + input_table_name + "_partition_array[i], " + _fpgaOutputTableName.stripSuffix("_preprocess") + "_partition_array" + "[i], " + nodeCfgCmd + ", " + nodeCfgCmd_out + ", buftmp_a);"
+      _fpgaKernelSetupCode += "}"
+    }
+    else {
+      kernel_name = "krnl_" + nodeOpName
+      _fpgaKernelSetupCode += "AggrKrnlEngine " + kernel_name + ";"
+      _fpgaKernelSetupCode += kernel_name + " = AggrKrnlEngine(program_a, q_a, \"gqeAggr\");"
+      _fpgaKernelSetupCode += kernel_name + ".setup(" + _children.head.fpgaOutputTableName + ", " + _fpgaOutputTableName + ", " + nodeCfgCmd + ", " + nodeCfgCmd_out + ", buftmp_a);"
+    }
+    // TODO: Set up transfer engine in host code
+    _fpgaTransEngineName = "trans_" + nodeOpName
+    _fpgaTransEngineSetupCode += "transEngine " + _fpgaTransEngineName + ";"
+    _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".setq(q_a);"
+    if (sf == 30) {
+      _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + nodeCfgCmd_part + "));"
+    }
+    _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + nodeCfgCmd + "));"
+    for (ch <- _children) {
+      if (ch.operation.isEmpty) {
+        _fpgaTransEngineSetupCode += _fpgaTransEngineName + ".add(&(" + ch._fpgaOutputTableName + "));"
+      }
+    }
+    // TODO: Set up transfer engine output
+    var fpgaTransEngineOutputName = "trans_" + nodeOpName + "_out"
+    // if ((parentNode == null) || ((parentNode != null) && ((parentNode.cpuORfpga == 1 && parentNode.fpgaOverlayType != this._fpgaOverlayType) || (parentNode.cpuORfpga == 0)))) {
+    _fpgaTransEngineSetupCode += "transEngine " + fpgaTransEngineOutputName + ";"
+    _fpgaTransEngineSetupCode += fpgaTransEngineOutputName + ".setq(q_a);"
+    _fpgaTransEngineSetupCode += "q_a.finish();"
+    // TODO: Set up events in host code
+    var h2d_wr_name = "events_h2d_wr_" + nodeOpName
+    var d2h_rd_name = "events_d2h_rd_" + nodeOpName
+    var events_name = "events_" + nodeOpName
+    _fpgaEventsH2DName = h2d_wr_name
+    _fpgaEventsD2HName = d2h_rd_name
+    _fpgaEventsName = events_name
+    _fpgaKernelEventsCode += "std::vector<cl::Event> " + h2d_wr_name + ";"
+    _fpgaKernelEventsCode += "std::vector<cl::Event> " + d2h_rd_name + ";"
+    if (sf == 30) {
+      _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_name + "[2];"
+    } else {
+      _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_name + ";"
+    }
+    _fpgaKernelEventsCode += h2d_wr_name + ".resize(1);"
+    _fpgaKernelEventsCode += d2h_rd_name + ".resize(1);"
+    if (sf == 30) {
+      _fpgaKernelEventsCode += events_name + "[0].resize(1);"
+      _fpgaKernelEventsCode += events_name + "[1].resize(hpTimes_aggr);"
+    } else {
+      _fpgaKernelEventsCode += events_name + ".resize(1);"
+    }
+    var events_grp_name = "events_grp_" + nodeOpName
+    _fpgaKernelEventsCode += "std::vector<cl::Event> " + events_grp_name + ";"
+    var prev_events_grp_name = "prev_events_grp_" + nodeOpName
+    _fpgaKernelEventsCode += "std::vector<cl::Event> " + prev_events_grp_name + ";"
+    for (ch <- _children) {
+      if (ch.operation.nonEmpty && ch._cpuORfpga == 1 && this._fpgaOverlayType == ch._fpgaOverlayType) {
+        _fpgaKernelRunCode += prev_events_grp_name + ".push_back(" + ch.fpgaEventsH2DName + "[0]);"
+      }
+    }
+    // TODO: Run Xilinx L2 module kernels and link events in host code
+    for (ch <- _children) {
+      if (ch._operation.nonEmpty) {
+        _fpgaKernelRunCode += _fpgaTransEngineName + ".add(&(" + ch._fpgaOutputTableName + "));"
+      }
+    }
+    _fpgaKernelRunCode += _fpgaTransEngineName + ".host2dev(0, &(" + prev_events_grp_name + "), &(" + _fpgaEventsH2DName + "[0]));"
+    _fpgaKernelRunCode += events_grp_name + ".push_back(" + _fpgaEventsH2DName + "[0]);"
+    for (ch <- _children) {
+      if (ch.operation.nonEmpty && ch._cpuORfpga == 1 && this._fpgaOverlayType == ch._fpgaOverlayType) {
+        if (sf == 30) {
+          _fpgaKernelRunCode += events_grp_name + ".insert(std::end(" + events_grp_name + "), std::begin(" + ch.fpgaEventsName + "[0]), std::end(" + ch.fpgaEventsName + "[0]));"
+          _fpgaKernelRunCode += events_grp_name + ".insert(std::end(" + events_grp_name + "), std::begin(" + ch.fpgaEventsName + "[1]), std::end(" + ch.fpgaEventsName + "[1]));"
+        } else {
+          _fpgaKernelRunCode += events_grp_name + ".push_back(" + ch.fpgaEventsName + "[0]);"
+        }
+      }
+    }
+    if (sf == 30) {
+      _fpgaKernelRunCode += partition_kernel_name + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0][0]));"
+      _fpgaKernelRunCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
+      _fpgaKernelRunCode += "    " + kernel_name + "[i].run(0, &(" + _fpgaEventsName + "[0]), &(" + _fpgaEventsName + "[1][i]));"
+      _fpgaKernelRunCode += "}"
+    } else {
+      _fpgaKernelRunCode += kernel_name + ".run(0, &(" + events_grp_name + "), &(" + _fpgaEventsName + "[0]));"
+    }
+    _fpgaKernelRunCode += ""
+    if (sf == 30) {
+      _fpgaKernelRunCode += "for (int i(0); i < hpTimes_aggr; ++i) {"
+      _fpgaKernelRunCode += "    " + fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName.stripSuffix("_preprocess") + "_partition_array" + "[i]));"
+      _fpgaKernelRunCode += "}"
+      _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "[1]), &(" + _fpgaEventsD2HName + "[0]));"
+    } else {
+      _fpgaKernelRunCode += fpgaTransEngineOutputName + ".add(&(" + _fpgaOutputTableName + "));"
+      _fpgaKernelRunCode += fpgaTransEngineOutputName + ".dev2host(0, &(" + _fpgaEventsName + "), &(" + _fpgaEventsD2HName + "[0]));"
+    }
+    _fpgaKernelRunCode += "q_a.flush();"
+    _fpgaKernelRunCode += "q_a.finish();"
+    _fpgaKernelRunCode += ""
+    var tmp_aggr_col_consolidate = "SW_" + nodeOpName + "_consolidate("
+    if (sf == 30) {
+      tmp_aggr_col_consolidate += _fpgaOutputTableName.stripSuffix("_preprocess") + "_partition_array" + ", "
+    } else {
+      tmp_aggr_col_consolidate += _fpgaOutputTableName + ", "
+    }
+    _fpgaOutputTableName = _fpgaOutputTableName.stripSuffix("_preprocess")
+    if (sf == 30) {
+      tmp_aggr_col_consolidate += _fpgaOutputTableName + ", hpTimes_aggr);"
+    } else {
+      tmp_aggr_col_consolidate += _fpgaOutputTableName + ");"
+    }
+    _fpgaKernelRunCode += tmp_aggr_col_consolidate
 
   }
 
-  def printSWFuncCode: Unit ={
+  def genFPGAPartOverlayCode(parentNode: SQL2FPGA_QPlan, dfmap: Map[String, DataFrame], nodeOpName :String, sf : Int, queryNum: Int): Unit = {
+      var nodeCfgCmd = "cfg_" + nodeOpName + "_cmds"
+      var nodeGetCfgFuncName = "get_cfg_dat_" + nodeOpName + "_gqe_part"
+      _fpgaConfigCode += "cfgCmd " + nodeCfgCmd + ";"
+      _fpgaConfigCode += nodeCfgCmd + ".allocateHost();"
+      _fpgaConfigCode += nodeGetCfgFuncName + " (" + nodeCfgCmd + ".cmd);"
+      if (_fpgaOverlayType == 0) {
+        _fpgaConfigCode += nodeCfgCmd + ".allocateDevBuffer(context_h, 32);"
+      }
+      else if (_fpgaOverlayType == 1) {
+        _fpgaConfigCode += nodeCfgCmd + ".allocateDevBuffer(context_a, 32);"
+      }
 
-  }
+      // Generate the function that generates the Xilinx L2 module configurations
+      var cfgFuncCode = new ListBuffer[String]()
+      cfgFuncCode += "void " + nodeGetCfgFuncName + "(ap_uint<512>* hbuf) {"
+      var input_table_col = _children.head.outputCols
+      // ----------------------------------- Debug info -----------------------------------
+      cfgFuncCode += "    // StringRowIDSubstitution: " + _stringRowIDSubstitution + " StringRowIDBackSubstitution: " + _stringRowIDBackSubstitution
+      cfgFuncCode += "    // Supported operation: " + _nodeType
+      cfgFuncCode += "    // Operation: " + _operation
+      cfgFuncCode += "    // Input Table: " + input_table_col
+      cfgFuncCode += "    // Output Table: " + _outputCols
+      cfgFuncCode += "    // Node Depth: " + _treeDepth
+      cfgFuncCode += "    ap_uint<512>* b = hbuf;"
+      cfgFuncCode += "    memset(b, 0, sizeof(ap_uint<512>) * 9);"
+      cfgFuncCode += "    ap_uint<512> t = 0;"
+      cfgFuncCode += "    t.set_bit(2, 0); // dual-key - not sure what this does, yet" + "\n"
+
+      _nodeType match {
+        case "Filter" =>
+          //              enum FilterOp {
+          //                FOP_EQ,     ///< equal
+          //                FOP_DC = 0, ///< don't care, always true.
+          //                FOP_NE,     ///< not equal
+          //                FOP_GT,     ///< greater than, signed.
+          //                FOP_LT,     ///< less than, signed.
+          //                FOP_GE,     ///< greater than or equal, signed.
+          //                FOP_LE,     ///< less than or equal, signed.
+          //                FOP_GTU,    ///< greater than, unsigned.
+          //                FOP_LTU,    ///< less than, unsigned.
+          //                FOP_GEU,    ///< greater than or equal, unsigned.
+          //                FOP_LEU     ///< less than or equal, unsigned.
+          //              };
+          var filterCfgFuncCode = new ListBuffer[String]()
+          var filterCfgFuncName = "gen_fcfg_" + _fpgaNodeName
+          filterCfgFuncCode += "static void " + filterCfgFuncName + "(uint32_t cfg[]) {"
+          filterCfgFuncCode += "    using namespace xf::database;"
+          filterCfgFuncCode += "    int n = 0;"
+
+          // filterConditions_const => Map(col_idx, [filter_val, filter_op])
+          val filterConditions_const = collection.mutable.Map[Int, ListBuffer[(String, String)]]()
+          val filterConditions_col = collection.mutable.Map[(Int, Int), String]()
+          var filter_clauses = _operation.head.stripPrefix("(").stripSuffix(")").split(" AND ")
+          for (clause <- filter_clauses) {
+            if (!clause.contains("isnotnull")) {
+              var clause_formatted = clause
+              while (clause_formatted.contains("(") | clause_formatted.contains(")")) {
+                clause_formatted = clause_formatted.replace("(", "")
+                clause_formatted = clause_formatted.replace(")", "")
+              }
+              var col_name = clause_formatted.split(" ").head
+              var col_val = clause_formatted.split(" ").last
+              var filter_clause_col_idx = input_table_col.indexOf(col_name)
+              var filter_clause_val_idx = input_table_col.indexOf(col_val)
+
+              var col_op = "FOP_DC"
+              if (clause_formatted.contains(" = ")) {
+                col_op = "FOP_EQ"
+              } else if (clause_formatted.contains(" != ")) {
+                col_op = "FOP_NE"
+              } else if (clause_formatted.contains(" > ")) {
+                col_op = "FOP_GTU"
+              } else if (clause_formatted.contains(" < ")) {
+                col_op = "FOP_LTU"
+              } else if (clause_formatted.contains(" >= ")) {
+                col_op = "FOP_GEU"
+              } else if (clause_formatted.contains(" <= ")) {
+                col_op = "FOP_LEU"
+              } else {
+                col_op = "FOP_DC"
+              }
+
+              if (filter_clause_val_idx == -1) { //const filtering factor
+                // e.g. columnDictionary += (col -> (tcph_table, col_first))
+                if (filterConditions_const.contains(filter_clause_col_idx)) {
+                  var filterValOp = filterConditions_const(filter_clause_col_idx)
+                  var temp = (col_val, col_op)
+                  filterValOp += temp
+                  filterConditions_const += (filter_clause_col_idx -> filterValOp)
+                } else {
+                  var filterValOp = new ListBuffer[(String, String)]()
+                  var temp = (col_val, col_op)
+                  filterValOp += temp
+                  filterConditions_const += (filter_clause_col_idx -> filterValOp)
+                }
+              } else {
+                if (filter_clause_col_idx > filter_clause_val_idx) {
+                  val temp = (filter_clause_val_idx, filter_clause_col_idx)
+                  if (col_op == "FOP_GTU") {
+                    col_op = "FOP_LTU"
+                  } else if (col_op == "FOP_LTU") {
+                    col_op = "FOP_GTU"
+                  } else if (col_op == "FOP_GEU") {
+                    col_op = "FOP_LEU"
+                  } else if (col_op == "FOP_LEU") {
+                    col_op = "FOP_GEU"
+                  }
+                  filterConditions_col += (temp -> col_op)
+                } else {
+                  val temp = (filter_clause_col_idx, filter_clause_val_idx)
+                  filterConditions_col += (temp -> col_op)
+                }
+              }
+            }
+          }
+          println(filterConditions_const)
+          // check if map col is <= 4 and the number of filter condition is <= 2
+          var num_col = filterConditions_const.size
+          if (num_col > 4) {
+            filterCfgFuncCode += "//Unsupported number of filter columns (num_col > 4)"
+          }
+          for ((key, payload) <- filterConditions_const) {
+            if (payload.length > 2) {
+              filterCfgFuncCode += "//Unsupported number of filter conditions (num_col > 2)"
+            }
+          }
+
+          var i = 0
+          for (i <- 0 to 4 - 1) {
+            filterCfgFuncCode += "    // cond_" + (i + 1).toString
+            if (filterConditions_const.contains(i)) {
+              var payloadValOp = filterConditions_const(i)
+              if (payloadValOp.length == 1) {
+                filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+                filterCfgFuncCode += "    cfg[n++] = (uint32_t)" + payloadValOp.head._1 + "UL;"
+                filterCfgFuncCode += "    cfg[n++] = 0UL | (FOP_DC << FilterOpWidth) | (" + payloadValOp.head._2 + ");"
+              } else if (payloadValOp.length == 2) {
+                filterCfgFuncCode += "    cfg[n++] = (uint32_t)" + payloadValOp.head._1 + "UL;"
+                filterCfgFuncCode += "    cfg[n++] = (uint32_t)" + payloadValOp.last._1 + "UL;"
+                filterCfgFuncCode += "    cfg[n++] = 0UL | (" + payloadValOp.head._2 + " << FilterOpWidth) | (" + payloadValOp.last._2 + ");"
+              } else {
+                filterCfgFuncCode += "    //Unsupported Op"
+              }
+            } else {
+              filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+              filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+              filterCfgFuncCode += "    cfg[n++] = 0UL | (FOP_DC << FilterOpWidth) | (FOP_DC);"
+            }
+          }
+          filterCfgFuncCode += "    "
+          filterCfgFuncCode += "    uint32_t r = 0;"
+          filterCfgFuncCode += "    int sh = 0;"
+          var j = 0
+          i = 0
+          for (i <- 0 to 2) {
+            for (j <- i + 1 to 3) {
+              if (filterConditions_col.contains((i, j))) {
+                filterCfgFuncCode += "    r |= ((uint32_t)(" + filterConditions_col(i, j) + " << sh));"
+                filterCfgFuncCode += "    sh += FilterOpWidth;"
+              } else {
+                filterCfgFuncCode += "    r |= ((uint32_t)(FOP_DC << sh));"
+                filterCfgFuncCode += "    sh += FilterOpWidth;"
+              }
+            }
+          }
+          filterCfgFuncCode += "    cfg[n++] = r;" + "\n"
+          filterCfgFuncCode += "    // 4 true and 6 true"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)0UL;"
+          filterCfgFuncCode += "    cfg[n++] = (uint32_t)(1UL << 31);"
+          filterCfgFuncCode += "}"
+
+          // Print out filterCfgFuncCode first
+          for (line <- filterCfgFuncCode) {
+            _fpgaConfigFuncCode += line
+          }
+
+          cfgFuncCode += "    //input table col indices"
+          var input_tbl_col_list = "signed char id[] = {"
+          var a = 0
+          var num_input_tbl_col = input_table_col.length
+          for (a <- 0 to 8 - 1) {
+            if (a < num_input_tbl_col) {
+              input_tbl_col_list += a.toString + ", "
+            } else {
+              input_tbl_col_list += "-1, "
+            }
+          }
+          input_tbl_col_list = input_tbl_col_list.stripSuffix(", ")
+          input_tbl_col_list += "};"
+          cfgFuncCode += "    " + input_tbl_col_list
+          cfgFuncCode += "    for (int c = 0; c < 8; ++c) {"
+          cfgFuncCode += "        t.range(56 + 8 * c + 7, 56 + 8 * c) = id[c];"
+          cfgFuncCode += "    }"
+
+          cfgFuncCode += "    b[0] = t;" + "\n"
+
+          cfgFuncCode += "    //filter"
+          cfgFuncCode += "    uint32_t cfg[45];"
+          cfgFuncCode += "    " + filterCfgFuncName + "(cfg);"
+          cfgFuncCode += "    memcpy(&b[3], cfg, sizeof(uint32_t) * 45);" + "\n"
+        case _ =>
+          cfgFuncCode += "    // Unsupported operation: " + _nodeType
+      }
+      cfgFuncCode += "}"
+      for (line <- cfgFuncCode) {
+        _fpgaConfigFuncCode += line
+      }
+      // TODO: Set up Xilinx L2 module kernels in host code
+      // TODO: Set up Xilinx L2 module kernels
+      var kernel_name = "krnl_" + nodeOpName
+      // TODO: implement logic to decide which type of overlay to use: krnlEngine (gqe_join) or AggrKrnlEngine (gqe_aggr)
+      if (_fpgaOverlayType == 0) {
+        _fpgaKernelSetupCode += "krnlEngine " + kernel_name + ";"
+        _fpgaKernelSetupCode += kernel_name + " = krnlEngine(program_h, q_h, \"gqePart\");"
+      }
+      else if (_fpgaOverlayType == 1) {
+        _fpgaKernelSetupCode += "AggrKrnlEngine " + kernel_name + ";"
+        _fpgaKernelSetupCode += kernel_name + " = AggrKrnlEngine(program_a, q_a, \"gqePart\");"
+      }
+
+      _fpgaConfigCode += "int psize = 16;" // Default value
+      _fpgaConfigCode += "int hjRow = 1 << psize;" // TODO: implement logic to automatically decide partition size
+      _fpgaConfigCode += "int hpTimes = 1 << (int)ceil(log2((float)(" + _children.head.fpgaOutputTableName + ".nrow / hjRow)));"
+      _fpgaConfigCode += "int power_of_hpTimes = log2(hpTimes);"
+      _fpgaConfigCode += "std::cout << \"Number of partition is: \" << hpTimes << std::endl;"
+      var fpgaOutputTableName_partitioned = _fpgaOutputTableName + "_partitioned"
+      _fpgaKernelSetupCode += kernel_name + ".setup_hp( 512, 0, power_of_hpTimes, " + _children.head.fpgaOutputTableName + ", " + fpgaOutputTableName_partitioned + ", " + nodeCfgCmd + ");"
+      // TODO: Set up transfer engine
+      // TODO: Set up events
+      // TODO: Run Xilinx L2 module kernels and link events
+    }
+
 }
+

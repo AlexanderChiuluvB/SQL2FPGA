@@ -1,18 +1,20 @@
 package org.example
 import org.apache.spark.sql.{DataFrame, SparkSession}
+
 import java.io.{BufferedWriter, File, FileWriter}
 import scala.collection.mutable.ListBuffer
 
-object SQL2FPGA_Top{
+object SQL2FPGA_Top {
+
   //SQL2FPGA_QConfig
   var qConfig = new SQL2FPGA_QConfig
-  val INPUT_DIR_TPCH  = "/Users/aleclu/dev/tpch-spark/dbgen/tpch_data_01"
-  val OUTPUT_DIR_TPCH = "/Users/aleclu/dev/tpch-spark/dbgen/tpch_data_01"
+  val INPUT_DIR_TPCH  = "../tpch-dbgen"
+  val OUTPUT_DIR_TPCH = "../tpch-dbgen"
   val INPUT_DIR_TPCDS = "/Users/aleclu/dev/tpcds-spark/dbgen/tpcds_data_1"
   val OUTPUT_DIR_TPCDS = "/Users/aleclu/dev/tpcds-spark/dbgen/tpcds_data_1"
   qConfig.tpch_queryNum_start = 1
   qConfig.tpch_queryNum_end = 22
-  qConfig.tpch_queryNum_list = ListBuffer(1) // 3, 13, 15, 18, 20
+  qConfig.tpch_queryNum_list = ListBuffer(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22) // 3, 13, 15, 18, 20
   qConfig.tpcds_queryNum_start = 1
   qConfig.tpcds_queryNum_end = 22
   qConfig.tpcds_queryNum_list = ListBuffer(1) // 1, 2, 3, 5, 6, 7, 8, 9
@@ -252,7 +254,7 @@ object SQL2FPGA_Top{
 
     var t1_spark = System.nanoTime();
     val elapsed_spark_builder = (t1_spark - t0_spark) / 1000000000.0f //second
-    println("Spark builder time: " + elapsed_spark_builder)
+    print("Spark builder time: " + elapsed_spark_builder)
 
     // Start SQL2FPGA Compilation
     val output = new ListBuffer[(String, Float)]
@@ -272,5 +274,4 @@ object SQL2FPGA_Top{
     }
     bw.close()
   }
-
 }
