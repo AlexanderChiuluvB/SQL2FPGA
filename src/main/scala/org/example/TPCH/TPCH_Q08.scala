@@ -31,7 +31,7 @@ class TPCH_Q08 extends TPCH_Queries {
     sc.sql("select o_year, sum(case when nation = 'IRAQ' then volume else 0 end) / sum(volume) as mkt_share " +
       "from (" +
       "select int(o_orderdate/10000) as o_year, l_extendedprice * (100 - l_discount) as volume, n2.n_name as nation " +
-      "from part, supplier, lineitem, order, customer, nation n1, nation n2, region " +
+      "from part, supplier, lineitem, orders, customer, nation n1, nation n2, region " +
       "where p_partkey = l_partkey " +
       "and s_suppkey = l_suppkey " +
       "and l_orderkey = o_orderkey " +

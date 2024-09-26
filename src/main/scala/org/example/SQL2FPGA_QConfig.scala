@@ -6,6 +6,7 @@ import scala.collection.mutable.ListBuffer
 //----------------------------------------------------------------------------------------------------------------
 class SQL2FPGA_QConfig{
   // definitions
+  private var _format: String = "default"
   private var _tpch_queryNum_start: Int = 5
   private var _tpch_queryNum_end: Int = 5
   private var _tpch_queryNum_list: ListBuffer[Int] = new ListBuffer[Int]()
@@ -18,6 +19,7 @@ class SQL2FPGA_QConfig{
   private var _num_spark_execution: Int = 1
   private var _query_plan_optimization_enable: String = "00000" // 5 digit for 5 optimizations
   // getters
+  def format = _format
   def tpch_queryNum_start = _tpch_queryNum_start
   def tpch_queryNum_end = _tpch_queryNum_end
   def tpch_queryNum_list = _tpch_queryNum_list
@@ -30,6 +32,10 @@ class SQL2FPGA_QConfig{
   def num_spark_execution = _num_spark_execution
   def query_plan_optimization_enable = _query_plan_optimization_enable
   // setters
+  def format_= (newValue: String): Unit = {
+    _format = newValue
+  }
+
   def tpch_queryNum_start_= (newValue: Int): Unit = {
     _tpch_queryNum_start = newValue
   }

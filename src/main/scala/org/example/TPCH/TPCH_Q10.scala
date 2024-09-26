@@ -23,7 +23,7 @@ class TPCH_Q10 extends TPCH_Queries {
     // sc.sql("select c_custkey, c_name, sum(l_extendedprice * (100 - l_discount)) as revenue, c_acctbal, n_name, c_address, c_phone, c_comment " +
     // sc.sql("select c_custkey, c_name, sum(l_extendedprice * (100 - l_discount)) as revenue, c_acctbal, n_name, c_address, c_phone " +
     sc.sql("select c_custkey, c_name, sum(l_extendedprice * (100 - l_discount)) as revenue, c_acctbal, n_name " +
-      "from customer, order, lineitem, nation " +
+      "from customer, orders, lineitem, nation " +
       "where c_custkey = o_custkey " +
       "and l_orderkey = o_orderkey " +
       "and o_orderdate >= 19940801 " +

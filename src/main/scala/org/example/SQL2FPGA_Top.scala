@@ -8,13 +8,16 @@ object SQL2FPGA_Top {
 
   //SQL2FPGA_QConfig
   var qConfig = new SQL2FPGA_QConfig
-  val INPUT_DIR_TPCH  = "../tpch-dbgen"
-  val OUTPUT_DIR_TPCH = "../tpch-dbgen"
+  val INPUT_DIR_TPCH  = "/localhdd/hza215/spark_benchmark/tpch/orc"
+  val OUTPUT_DIR_TPCH = "/localhdd/hza215/tpch-parquet"
   val INPUT_DIR_TPCDS = "/Users/aleclu/dev/tpcds-spark/dbgen/tpcds_data_1"
   val OUTPUT_DIR_TPCDS = "/Users/aleclu/dev/tpcds-spark/dbgen/tpcds_data_1"
+  qConfig.format = "orc"
   qConfig.tpch_queryNum_start = 1
   qConfig.tpch_queryNum_end = 22
-  qConfig.tpch_queryNum_list = ListBuffer(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22) // 3, 13, 15, 18, 20
+  // 2,20
+
+  qConfig.tpch_queryNum_list = ListBuffer(2) // 3, 13, 15, 18, 20
   qConfig.tpcds_queryNum_start = 1
   qConfig.tpcds_queryNum_end = 22
   qConfig.tpcds_queryNum_list = ListBuffer(1) // 1, 2, 3, 5, 6, 7, 8, 9
@@ -35,7 +38,12 @@ object SQL2FPGA_Top {
   //----------------------------------------------------------------------------------------------------------------
   // Table column metadata
   //----------------------------------------------------------------------------------------------------------------
+  // col->dataType
   val columnDictionary = collection.mutable.Map[String, (String, String)]()
+  // col->table
+  val columnTableMap = collection.mutable.Map[String, (String, String)]()
+  // col->code
+  val columnCodeMap = collection.mutable.Map[String, (String, String)]()
 
   def outputDF(query: SQL2FPGA_Query, df: DataFrame, outputDir: String, elapsed_time: Float): Unit = {
     if (outputDir == null || outputDir == "")
@@ -51,6 +59,7 @@ object SQL2FPGA_Top {
       query.setGoldenOutput(output_rows)
     }
   }
+  
   def executeTPCHQueries(sc: SparkSession, schemaProvider: TpchSchemaProvider, qConfig: SQL2FPGA_QConfig, output_dir: String): ListBuffer[(String, Float)] = {
     var codegen = new SQL2FPGA_Codegen
     val results = new ListBuffer[(String, Float)]
@@ -104,7 +113,8 @@ object SQL2FPGA_Top {
       //----------------------------------------------------------------------------------------------------------------
       // cascaded-join transformations
       if (qConfig.query_plan_optimization_enable(0) == '1') {
-        if (queryNo != 9 && queryNo != 10 && queryNo != 4)
+        // TODO: HAIKAI 20240107 Query 2 has join reorder has bug
+        if (queryNo != 9 && queryNo != 10 && queryNo != 4 && queryNo !=2)
           qParser.qPlan.applyCascadedJoinOptTransform(qParser, queryNo, qConfig, schemaProvider.dfMap)
       }
       // stringDataType transformations
@@ -250,6 +260,11 @@ object SQL2FPGA_Top {
     val spark = SparkSession.builder()
       .master("local[1]")
       .appName("SQL2FPGA Query Demo")
+      .config("spark.driver.memory", "64g")
+      .config("spark.driver.cores", "16")
+      .config("spark.executor.memory", "64g")
+      .config("spark.executor.cores", "16")
+      .config("spark.driver.maxResultSize", "8g")
       .getOrCreate()
 
     var t1_spark = System.nanoTime();
@@ -259,7 +274,7 @@ object SQL2FPGA_Top {
     // Start SQL2FPGA Compilation
     val output = new ListBuffer[(String, Float)]
     if (TPCH_or_DS == 0) {
-      val tpchschemaProvider  = new TpchSchemaProvider(spark, INPUT_DIR_TPCH);
+      val tpchschemaProvider  = new TpchSchemaProvider(spark, INPUT_DIR_TPCH, qConfig.format);
       output ++= executeTPCHQueries(spark, tpchschemaProvider, qConfig, OUTPUT_DIR_TPCH);
     } else if (TPCH_or_DS == 1) {
       val tpcdsschemaProvider = new TpcdsSchemaProvider(spark, INPUT_DIR_TPCDS);

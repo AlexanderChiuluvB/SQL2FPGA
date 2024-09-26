@@ -106,6 +106,31 @@ git clone https://github.com/SFU-HiAccel/SQL2FPGA.git
         make clean
         make run TARGET=hw MODE=FPGA TB=Q# DEVICE=xilinx_u280_xdma_201920_3 TEST=SQL2FPGA
         ```
+## files need to add in gqe-api.hpp in Vitis Library
+
+```
+   void copyTableData(Table* dest_table) {
+        int cpNum = 0;
+        for (size_t i = 0; i < ncol; i++) {
+            if (iskdata[i] == 1) {
+                cpNum++;
+            }
+        }
+        size_t depth = nrow + VEC_LEN * 2 - 1;
+        size_t sizeonecol = size_t((4 * depth + 64 - 1) / 64);
+
+        size_t numBytes = 0;
+        if (getKdata()) {
+            numBytes = 64  sizeonecol  cpNum;
+            memcpy((char*)dest_table->datak, (char*)datak, numBytes);
+        } else {
+            numBytes = 64 * size512.back();
+            memcpy((char*)dest_table->data, (char*)data, numBytes);
+        }
+    };
+
+```
+
 
 Now you have compeletd the entire tool flow of SQL2FPGA. Hack the code and have fun!
 
@@ -113,6 +138,8 @@ Now you have compeletd the entire tool flow of SQL2FPGA. Hack the code and have 
 * Whether to use hash partition logic requires manual specification in SF30.
 * Device selection between CPU and FPGA overlay design is currently manually selected through empirical results.
 * Output table size required manual input to achieve the best CPU-to-FPGA memory transfer time.
+
+
 
 ## Authors and Contributors
 SQL2FPGA is currently maintained by [Alec Lu](http://www.sfu.ca/~fla30/).

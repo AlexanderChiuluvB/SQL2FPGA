@@ -31,7 +31,7 @@ class TPCH_Q21 extends TPCH_Queries {
 //      "order by numwait desc, s_name;")
 
     sc.sql("select s_name, count(*) as numwait " +
-      "from supplier, lineitem l1, order, nation " +
+      "from supplier, lineitem l1, orders, nation " +
       "where s_suppkey = l1.l_suppkey " +
         "and o_orderkey = l1.l_orderkey " +
         "and o_orderstatus = 70 " +

@@ -26,7 +26,7 @@ class TPCH_Q12 extends TPCH_Queries {
     sc.sql("select l_shipmode, " +
       "sum(case when o_orderpriority = '1-URGENT' or o_orderpriority = '2-HIGH' then 1 else 0 end) as high_line_count, " +
       "sum(case when o_orderpriority <> '1-URGENT' and o_orderpriority <> '2-HIGH' then 1 else 0 end) as low_line_count " +
-      "from order, lineitem " +
+      "from orders, lineitem " +
       "where o_orderkey = l_orderkey " +
         "and l_shipmode in ('TRUCK', 'MAIL') " +
         "and l_commitdate < l_receiptdate " +

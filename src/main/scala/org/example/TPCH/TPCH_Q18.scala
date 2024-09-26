@@ -28,7 +28,7 @@ class TPCH_Q18 extends TPCH_Queries {
 //    sc.sql("cache table lineitem;")
 
     sc.sql("select c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice, sum(l_quantity) " +
-      "from customer, order, lineitem " +
+      "from customer, orders, lineitem " +
       "where o_orderkey in (" +
           "select l_orderkey " +
           "from lineitem " +

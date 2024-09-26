@@ -23,7 +23,7 @@ class TPCH_Q13 extends TPCH_Queries {
     sc.sql("select c_count, count(*) as custdist " +
       "from (" +
       "select c_custkey, count(o_orderkey) " +
-      "from customer left outer join order on " +
+      "from customer left outer join orders on " +
       "c_custkey = o_custkey " +
       "and o_comment not like '%unusual%deposits%' group by c_custkey" +
       ") as c_orders (c_custkey, c_count) " +

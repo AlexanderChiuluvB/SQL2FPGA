@@ -39,12 +39,12 @@ class TPCH_Q15 extends TPCH_Queries {
                 with revenue (supplier_no, total_revenue) as (
                     select
                       l_suppkey,
-                      sum(l_extendedprice * (1-l_discount))
+                      sum(l_extendedprice * (100-l_discount))
                     from
                       lineitem
                     where
-                      l_shipdate >= 1
-                      and l_shipdate < (1 + 3)
+                      l_shipdate >= 19960101
+                      and l_shipdate < 19960401
                     group by
                       l_suppkey
                 )

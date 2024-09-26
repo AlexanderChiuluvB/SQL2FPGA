@@ -12,7 +12,7 @@ class TPCH_Q07 extends TPCH_Queries {
     // Original Version
     sc.sql("select supp_nation, cust_nation, l_year, sum(volume) as revenue " +
       "from ( select n1.n_name as supp_nation, n2.n_name as cust_nation, int(l_shipdate/10000) as l_year,l_extendedprice * (100 - l_discount) as volume " +
-      "from supplier, lineitem, order, customer, nation n1, nation n2 " +
+      "from supplier, lineitem, orders, customer, nation n1, nation n2 " +
       "where s_suppkey = l_suppkey " +
       "and o_orderkey = l_orderkey " +
       "and c_custkey = o_custkey " +

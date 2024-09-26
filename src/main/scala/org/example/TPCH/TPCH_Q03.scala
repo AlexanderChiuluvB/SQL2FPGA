@@ -25,8 +25,8 @@ class TPCH_Q03 extends TPCH_Queries {
 //    sc.conf.set("spark.sql.adaptive.coalescePartitions.enabled",false)
 
     sc.sql("select l_orderkey, sum(l_extendedprice * (100 - l_discount)) as revenue, o_orderdate, o_shippriority " +
-      "from customer, order, lineitem " +
-      "where c_mktsegment = 'MACHINERY' and c_custkey = o_custkey and l_orderkey = o_orderkey and o_orderdate < 19950307 and l_shipdate > 19950307 " +
+      "from customer, orders, lineitem " +
+      "where c_mktsegment = 'MACHINERY' and c_custkey = o_custkey and l_orderkey = o_orderkey and o_orderdate < 19950307 and o_orderdate > 19950214 and l_shipdate > 19950307 " +
       "group by l_orderkey, o_orderdate, o_shippriority " +
       "order by revenue desc, o_orderdate;")
   }

@@ -27,7 +27,7 @@ class TPCH_Q22 extends TPCH_Queries {
             "from customer " +
             "where c_acctbal > 0 " +
               "and substring(c_phone from 1 for 2) in ('19', '11', '16', '27', '15', '22', '12')) " +
-          "and not exists (select * from order where o_custkey = c_custkey)) as custsale " +
+          "and not exists (select * from orders where o_custkey = c_custkey)) as custsale " +
       "group by cntrycode " +
       "order by cntrycode;")
   }

@@ -40,7 +40,7 @@ class SQL2FPGA_Codegen {
     bw.write("#include \"table_dt.hpp\" \n")
     bw.write("#include \"utils.hpp\" \n")
     bw.write("#include \"tpch_read_2.hpp\" \n")
-    bw.write("#include \"tpcds_read.hpp\" \n")
+    //bw.write("#include \"tpcds_read.hpp\" \n")
     bw.write("#include \"gqe_api.hpp\" \n")
     bw.write("\n")
     bw.write("#include \"cfgFunc_q" + queryNo + ".hpp\" \n")
@@ -106,7 +106,7 @@ class SQL2FPGA_Codegen {
       bw.write("    int32_t lineitem_n = SF1_LINEITEM; \n")
       bw.write("    int32_t supplier_n = SF1_SUPPLIER; \n")
       bw.write("    int32_t nation_n = SF1_NATION; \n")
-      bw.write("    int32_t order_n = SF1_ORDERS; \n")
+      bw.write("    int32_t orders_n = SF1_ORDERS; \n")
       bw.write("    int32_t customer_n = SF1_CUSTOMER; \n")
       bw.write("    int32_t region_n = SF1_REGION; \n")
       bw.write("    int32_t part_n = SF1_PART; \n")
@@ -115,7 +115,7 @@ class SQL2FPGA_Codegen {
       bw.write("        lineitem_n = SF30_LINEITEM; \n")
       bw.write("        supplier_n = SF30_SUPPLIER; \n")
       bw.write("        nation_n = SF30_NATION; \n")
-      bw.write("        order_n = SF30_ORDERS; \n")
+      bw.write("        orders_n = SF30_ORDERS; \n")
       bw.write("        customer_n = SF30_CUSTOMER; \n")
       bw.write("        region_n = SF30_REGION; \n")
       bw.write("        part_n = SF30_PART; \n")
@@ -801,7 +801,6 @@ class SQL2FPGA_Codegen {
       for (ch <- this_node.children) {
         q_node.enqueue(ch)
       }
-
 
       // update entire plan queue
       var tmp_q = Queue[SQL2FPGA_QPlan]()

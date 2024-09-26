@@ -2,7 +2,8 @@ package org.example
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, AppendColumns, AppendColumnsWithObject, BinaryNode, DeserializeToObject, Distinct, Filter, Generate, GlobalLimit, Join, LocalLimit, LogicalPlan, MapElements, Project, Repartition, RepartitionByExpression, Sample, SerializeFromObject, Sort, SubqueryAlias, TypedFilter, UnaryNode, Window}
-import org.example.SQL2FPGA_Top.{DEBUG_PARSER, columnDictionary}
+import org.apache.spark.sql.execution.datasources.LogicalRelation
+import org.example.SQL2FPGA_Top.{DEBUG_PARSER, columnDictionary, columnTableMap, columnCodeMap}
 
 import scala.collection.mutable.ListBuffer
 
@@ -37,7 +38,7 @@ class SQL2FPGA_QParser {
     tbl_name match {
       case "lineitem" =>
         result = 6001215 // 6001215*30 = 180,036,450 -> div by 32 => 5,626,140
-      case "order" =>
+      case "orders" =>
         result = 1500000 // 1500000*30 = 45,000,000
       case "partsupp" =>
         result = 800000 // 800000*30 = 24,000,000
@@ -66,6 +67,52 @@ class SQL2FPGA_QParser {
     }
   }
 
+
+  // read parquet
+  def printReadLogicalRelation(r: LogicalRelation,
+                                num_indent: Int,
+                                root_required_col: ListBuffer[String],
+                                fpga_plan: SQL2FPGA_QPlan,
+                                sf: Int): Unit = {
+    var nodeType = "SerializeFromObject"
+    //nodeType = r.simpleString(0)l
+    println("nodeType is " +  nodeType)
+    fpga_plan.nodeType = nodeType
+    var tpch_table = ""
+    var parent_required_col = new ListBuffer[String]()
+    r.relation match {
+      case hadoopFsRelation: org.apache.spark.sql.execution.datasources.HadoopFsRelation => {
+        tpch_table = hadoopFsRelation.location.rootPaths.headOption.get.toString.split("/").last
+      }
+    }
+
+    for (root_col <- root_required_col) {
+      if (!parent_required_col.contains(root_col)) {
+        parent_required_col += root_col
+      }
+    }
+    print_indent(num_indent)
+    print("Output: ")
+    for (_output <- parent_required_col) {
+      print(_output + ", ")
+    }
+    fpga_plan.outputCols = parent_required_col
+    fpga_plan.inputCols = parent_required_col
+    print("\n")
+    print_indent(num_indent)
+    for (_column <- parent_required_col) {
+      var col: String = _column
+      val col_first = col.split("#").head
+      print(col_first + ", ")
+      columnTableMap += (col -> (tpch_table, col))
+      columnTableMap += (col_first -> (tpch_table, col_first))
+    }
+    fpga_plan.numTableRow = getTableRow(tpch_table, sf)
+    print("\n")
+
+  }
+
+
   def printUnaryOperation(u: UnaryNode,
                           num_indent: Int,
                           root_required_col: ListBuffer[String],
@@ -79,6 +126,7 @@ class SQL2FPGA_QParser {
 //      nodeType = nodeType.concat(ptrn.toString)
 //    }
     nodeType = u.nodeName
+    println("nodeType is " +  nodeType)
     fpga_plan.nodeType = nodeType
     var validOp = true
     var isProject = false
@@ -296,7 +344,8 @@ class SQL2FPGA_QParser {
           var col: String = _column
           val col_first = col.split("#").head
           print(col_first + ", ")
-          columnDictionary += (col -> (tcph_table, col_first))
+          columnTableMap += (col -> (tcph_table, col))
+          columnTableMap += (col_first -> (tcph_table, col_first))
         }
         fpga_plan.numTableRow = getTableRow(tcph_table, sf)
         print("\n")
@@ -310,14 +359,18 @@ class SQL2FPGA_QParser {
     if (typeString_1 != typeString_2) {
       for (_i_col <- u.inputSet) {
         print(_i_col.toString + ":" + _i_col.name + ":" + _i_col.dataType + " \n")
+        var _i_col_first = _i_col.toString.split("#").head
         if (!columnDictionary.contains(_i_col.toString)) {
+          columnDictionary += (_i_col_first -> (_i_col.dataType.toString, "NULL"))
           columnDictionary += (_i_col.toString -> (_i_col.dataType.toString, "NULL"))
         }
       }
       for (_o_col <- u.outputSet) {
         print(_o_col.toString + ":" + _o_col.name + ":" + _o_col.dataType + " \n")
+        var _o_col_first = _o_col.toString.split("#").head
         if (!columnDictionary.contains(_o_col.toString)) {
           columnDictionary += (_o_col.toString -> (_o_col.dataType.toString, "NULL"))
+          columnDictionary += (_o_col_first -> (_o_col.dataType.toString, "NULL"))
         }
       }
     }
@@ -425,9 +478,13 @@ class SQL2FPGA_QParser {
     }
     print_indent(num_indent)
     println(parent_required_col.toString())
+
     plan match {
       case u: UnaryNode => printUnaryOperation(u, num_indent, parent_required_col, fpga_plan, scale_factor)
       case b: BinaryNode => printBinaryOperation(b, num_indent, parent_required_col, fpga_plan, scale_factor)
+      case r: LogicalRelation => {
+         printReadLogicalRelation(r, num_indent, parent_required_col, fpga_plan, scale_factor)
+      }
       case _ => Nil
     }
   }
@@ -441,6 +498,7 @@ class SQL2FPGA_QParser {
     _qPlan_backup.addChildrenParentConnections(schemaProvider.dfMap, qConfig.pure_sw_mode)
     // Debug printouts
     if (DEBUG_PARSER) {
+      println("print plan in order:")
       _qPlan.printPlan_InOrder(schemaProvider.dfMap)
       println(columnDictionary.toString())
     }
